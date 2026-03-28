@@ -1,0 +1,452 @@
+\documentclass[11pt, a4paper]{article}
+
+\usepackage[margin=2.5cm]{geometry}
+\usepackage{amsmath, amssymb, amsthm}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\setlength{\parskip}{0.5em}
+\setlength{\parindent}{0pt}
+
+\hypersetup{
+  colorlinks = true,
+  linkcolor  = blue,
+  urlcolor   = blue
+}
+
+\newtheorem{remark}{Remark}
+\newtheorem{principle}{Design Principle}
+
+\title{\textbf{Application Module: Design Document}\\[0.4em]
+  \large Large-Scale Panel Data Analysis via Online TWFE\\[0.2em]
+  \normalsize Hwang \& Lee (2026) ---
+  \textit{Online Updating for Linear Panel Regressions}}
+\author{}
+\date{March 2026}
+
+\begin{document}
+\maketitle
+\tableofcontents
+\bigskip\bigskip
+
+% =============================================================================
+\section{Overview and Motivation}
+% =============================================================================
+
+The simulation study (Section~5.2) demonstrates that the online TWFE algorithm
+achieves numerical equivalence with a full-sample batch estimator while
+processing units sequentially.  In that setting, data are \emph{generated}
+unit by unit, so the full panel is never materialised in memory.
+
+The application module addresses a complementary and practically important
+scenario: a \emph{pre-existing} large dataset---stored as a flat file or in a
+database---that is too large to load into RAM at once.  The canonical example
+is a dataset with $N = 10^8$ individuals and $T = 10$ time periods, whose raw
+size may easily exceed 10~GB.
+
+Standard batch estimators such as \texttt{plm} require the entire
+\texttt{pdata.frame} to reside in memory before estimation begins.  The
+benchmark results already show that \texttt{plm} exhausts a 16~GB memory limit
+at $N \approx 2 \times 10^7$.  The online TWFE algorithm, by contrast,
+maintains a fixed-size state object of $O(p^2)$ scalars regardless of $N$,
+and processes the data one chunk at a time.
+
+\begin{remark}
+The distinction between the simulation and application settings lies entirely
+in \emph{how data enter the algorithm}, not in the algorithm itself.  In both
+cases the same algebraically exact update equations (Propositions~1--3) are
+applied; only the data ingestion pipeline differs.
+\end{remark}
+
+% =============================================================================
+\section{Model and Estimands}
+% =============================================================================
+
+The target model is the two-way fixed-effects (TWFE) panel regression
+\[
+  Y_{it} \;=\; X_{it}'\beta + \alpha_i + \lambda_t + u_{it},
+  \qquad i = 1,\ldots,N,\quad t \in \mathcal{S}_i \subseteq \{1,\ldots,T\},
+\]
+where $\alpha_i$ denotes individual fixed effects and $\lambda_t$ calendar-time
+fixed effects.  The panel is \emph{unbalanced}: each unit $i$ is observed on a
+subset $\mathcal{S}_i$ of the $T$ calendar periods.
+
+The three estimands of interest are:
+\begin{enumerate}
+  \item[(i)] the slope coefficient vector $\hat\beta$ (via Algorithm~1);
+  \item[(ii)] the classical variance $\widehat{V}_0 = \hat\sigma^2
+        (\dot{Z}'\dot{Z})^{-1}$; and
+  \item[(iii)] the cluster-robust (Arellano HC0) variance $\hat{V}_{cr}$.
+\end{enumerate}
+All three are produced in a \emph{single pass} over the data chunks.
+
+% =============================================================================
+\section{Prerequisites and Design Constraints}
+% =============================================================================
+
+\subsection{Unit-Boundary Constraint}
+
+The within transformation for individual $i$,
+\[
+  \dot{Z}_i = Z_i - \bar{Z}_i, \qquad \dot{Y}_i = Y_i - \bar{Y}_i,
+\]
+requires \emph{all} observations of unit $i$ to be available simultaneously.
+Consequently, a fundamental constraint on any chunked design is:
+
+\begin{principle}[Unit atomicity]
+No chunk may split the observations of a single unit across two chunks.
+Every unit's rows must appear entirely within one chunk.
+\end{principle}
+
+This implies that chunks are defined in terms of \emph{number of units}, not
+number of rows.  For an unbalanced panel, the row count of a chunk of $C$ units
+is $\sum_{i \in \mathrm{chunk}} T_i$, which varies across chunks.
+
+\subsection{Sorted Input Requirement}
+
+Unit atomicity can only be guaranteed if the dataset is sorted by the
+individual identifier (\texttt{id}) prior to chunked reading.
+
+\begin{principle}[Sorted input]
+The dataset must be sorted by \texttt{id} in non-decreasing order before the
+chunked analysis begins.
+\end{principle}
+
+A dataset sorted by calendar time, for instance, would interleave the rows of
+different units and make unit-boundary detection impossible without a full pass.
+
+\subsection{Pre-specified Calendar Time Support}
+
+Let $\mathcal{T} = \{t_1, t_2, \ldots, t_T\}$ denote the full set of calendar
+times present in the dataset.  The $p = k + T - 1$ dimensional parameter
+space is fixed at initialisation.  If $\mathcal{T}$ were allowed to grow
+during chunked processing, Algorithm~3 (new calendar time) would be triggered,
+expanding the parameter dimension and requiring re-projection of previously
+accumulated sufficient statistics onto the enlarged parameter space.
+
+\begin{principle}[Pre-specified $T_{\mathrm{support}}$]
+The full calendar time support $T$ is determined before processing begins and
+passed to the initialisation step.  All chunks are assumed to contain only
+time values within $\{1,\ldots,T\}$.
+\end{principle}
+
+In practice, $T$ is either known from the study design (e.g.\ a 10-year panel
+has $T = 10$) or is determined with a single lightweight scan of only the
+\texttt{time} column of the file, which is fast even for very large files.
+
+% =============================================================================
+\section{Four-Phase Workflow}
+% =============================================================================
+
+\subsection{Phase 0 --- Data Inspection}
+
+Before any estimation, the analyst performs a lightweight scan to collect
+structural metadata:
+\begin{itemize}
+  \item Column names and data types (\texttt{id}, \texttt{time}, \texttt{y},
+        $x_1,\ldots,x_k$).
+  \item The set of unique calendar times $\{t_1,\ldots,t_T\}$, from which
+        $T_{\mathrm{support}}$ and \texttt{baseline\_time} are determined.
+  \item Whether the file is already sorted by \texttt{id}.
+\end{itemize}
+
+This phase reads only the \texttt{id} and \texttt{time} columns (a small
+fraction of the total file size) and produces no large intermediate objects.
+
+\subsection{Phase 1 --- Preprocessing: Sort}
+
+If the file is not already sorted by \texttt{id}, an external sort is required.
+For a 10~GB file this is infeasible with R's in-memory sort; instead, one of
+the following approaches is used:
+\begin{itemize}
+  \item Unix \texttt{sort} utility (fastest; operates directly on disk).
+  \item Apache Arrow (\texttt{open\_dataset} $\to$ \texttt{arrange} $\to$
+        \texttt{write\_csv\_arrow}).
+  \item A database \texttt{ORDER BY id} query.
+\end{itemize}
+Phase~1 is a \emph{one-time cost}.  If the data source is a database or a
+file system that supports querying by id range, this phase may be bypassed.
+
+\subsection{Phase 2 --- Chunked State Accumulation}
+
+This is the core of the application module.  Phase~2 implements the pipeline:
+\[
+  \texttt{otwfe\_init} \;\to\;
+  \underbrace{\texttt{otwfe\_update}(\text{chunk 1})
+    \;\to\; \cdots \;\to\;
+    \texttt{otwfe\_update}(\text{chunk } C)}_{\text{repeat for each chunk}}.
+\]
+
+\paragraph{Chunk boundary detection.}
+Given the sorted file, the unit boundaries are identified by run-length
+encoding of the \texttt{id} column.  This produces, for each unit, the number
+of rows it occupies.  Cumulative sums of these lengths yield exact row offsets
+for every unit, allowing each chunk to be read as a contiguous block of exactly
+$C$ units.  This scan is performed once and the boundary table (a vector of
+$N$ integers) is retained in memory; for $N = 10^8$, this amounts to
+approximately 400~MB---a fixed cost independent of the file size.
+
+\paragraph{Initialisation (\texttt{otwfe\_init}).}
+The handle is created with:
+\begin{itemize}
+  \item the covariate column names $x_1,\ldots,x_k$;
+  \item $T_{\mathrm{support}}$ (from Phase~0);
+  \item \texttt{baseline\_time} (the omitted time dummy); and
+  \item a verbosity flag.
+\end{itemize}
+At this point no data have been read.  The state object $\mathcal{S}$ is
+uninitialised; the handle is an empty shell.
+
+\paragraph{First chunk (\texttt{otwfe\_update}, call 1).}
+Processing the first chunk involves two sub-steps:
+
+\begin{enumerate}
+  \item \textbf{Warm-up initialisation.}  A small subset of units (at least
+  $3p$ units, minimum 30) is selected from the first chunk by a greedy cover
+  algorithm that guarantees every calendar time $t \in \{1,\ldots,T\}$ is
+  represented at least once in the warm-up set.  These units are used to
+  compute an initial OLS estimate via the full within-regression, producing the
+  initial state
+  \[
+    \mathcal{S}_0 = \bigl\{
+      (\dot{Z}'\dot{Z})^{-1},\;
+      \hat\beta,\;
+      \hat\sigma^2,\;
+      N_{\mathrm{warm}},\;
+      n_{\mathrm{warm}},\;
+      M_{ss},\;
+      A_N,\;
+      B_N
+    \bigr\}.
+  \]
+
+  \item \textbf{Remaining units.}  All units in the first chunk beyond the
+  warm-up set are processed by the Rcpp batch update (\texttt{alg1\_batch\_cpp}),
+  which adds their sufficient statistics to $\mathcal{S}$ in a single pass.
+\end{enumerate}
+
+\paragraph{Subsequent chunks (\texttt{otwfe\_update}, calls 2 onward).}
+Each subsequent chunk contains only new units not yet seen by the algorithm.
+The Rcpp batch routine processes the entire chunk in a single pass:
+\begin{enumerate}
+  \item For each unit $i$ in the chunk, compute
+        $S_i = \dot{Z}_i'\dot{Z}_i$,\; $s_i = \dot{Z}_i'\dot{Y}_i$,\;
+        $\mathrm{SSy}_i = \dot{Y}_i'\dot{Y}_i$, and $\mathrm{vec}(S_i)$.
+  \item Accumulate $\sum S_i$, $\sum s_i$, $\sum \mathrm{SSy}_i$
+        into running totals.
+  \item Accumulate the three Vcr building blocks:
+  \[
+    M_{ss} \mathrel{+}= s_i s_i', \qquad
+    A_N    \mathrel{+}= s_i \operatorname{vec}(S_i)', \qquad
+    B_N    \mathrel{+}= \operatorname{vec}(S_i)\operatorname{vec}(S_i)'.
+  \]
+  \item Update $(\dot{Z}'\dot{Z})^{-1}$, $\hat\beta$, and $\hat\sigma^2$
+        using the rank-update formula.
+\end{enumerate}
+
+The key property that makes this chunk-safe is:
+
+\begin{remark}[Chunk-safe Vcr accumulation]
+The matrices $M_{ss}$, $A_N$, $B_N$ are defined as sums over individual units.
+Because addition is commutative and associative, these sums can be split across
+any number of chunks and accumulated in any order.  The final Vcr is computed
+\emph{after all chunks have been processed}, using the final $\hat\beta$:
+\[
+  M \;=\;
+    M_{ss}
+    - A_N\bigl(\hat\beta' \otimes I_p\bigr)
+    - \bigl(\hat\beta' \otimes I_p\bigr)' A_N'
+    + \bigl(\hat\beta' \otimes I_p\bigr) B_N \bigl(\hat\beta' \otimes I_p\bigr)',
+\]
+\[
+  \hat{V}_{cr} \;=\; (\dot{Z}'\dot{Z})^{-1}\, M\, (\dot{Z}'\dot{Z})^{-1}.
+\]
+This formula is algebraically exact regardless of how many chunks were used or
+in what order units were processed.
+\end{remark}
+
+\paragraph{Memory profile.}
+After each call to \texttt{otwfe\_update}, the chunk data frame is immediately
+deleted from memory.  The only object persisting between chunks is the state
+handle $\mathcal{S}$, whose size is:
+\[
+  \underbrace{p \times p}_{\text{inv}} +
+  \underbrace{p}_{\hat\beta} +
+  \underbrace{1}_{\hat\sigma^2} +
+  \underbrace{p \times p}_{M_{ss}} +
+  \underbrace{p \times p^2}_{A_N} +
+  \underbrace{p^2 \times p^2}_{B_N}
+  \;=\; O(p^4) \text{ scalars.}
+\]
+For $p = 4$ ($k=2$, $T=3$), this is fewer than 200 double-precision numbers
+--- well under one kilobyte.  This footprint is \emph{independent of $N$}.
+
+\subsection{Phase 3 --- Finalisation}
+
+After all chunks have been processed, \texttt{otwfe\_finalize} performs:
+\begin{enumerate}
+  \item Compute $\hat{V}_{cr}$ from the accumulated $M_{ss}$, $A_N$, $B_N$,
+        and the final $\hat\beta$ using the formula in Remark~2.
+  \item Package $\hat\beta$, $\hat{V}_0$, $\hat{V}_{cr}$, and metadata into
+        the standard \texttt{otwfe} return object.
+\end{enumerate}
+This step is $O(p^4)$ and takes negligible time.
+
+% =============================================================================
+\section{Correctness Guarantees}
+% =============================================================================
+
+The chunked pipeline is \emph{not} an approximation.  The following
+equivalences hold exactly (up to floating-point rounding at double precision):
+
+\begin{enumerate}
+  \item[(i)] $\hat\beta_{\mathrm{chunk}} = \hat\beta_{\mathrm{batch}}$:
+        The coefficient vector produced by processing $C$-unit chunks is
+        identical to the OLS estimate from a single batch regression on the
+        full dataset.
+
+  \item[(ii)] $\hat{V}_{0,\mathrm{chunk}} = \hat{V}_{0,\mathrm{batch}}$:
+        The classical variance $\hat\sigma^2 (\dot{Z}'\dot{Z})^{-1}$ is exact
+        because both $\hat\sigma^2$ and $(\dot{Z}'\dot{Z})^{-1}$ accumulate
+        exactly across chunks.
+
+  \item[(iii)] $\hat{V}_{cr,\mathrm{chunk}} = \hat{V}_{cr,\mathrm{batch}}$:
+        By Remark~2, the single-pass Vcr formula evaluated at the final
+        $\hat\beta$ yields the same result as the Arellano HC0 sandwich
+        estimator applied to the full sample.
+\end{enumerate}
+
+These equivalences were verified numerically in the simulation study at
+$N = 10^6$, $5 \times 10^6$, and $10^7$, with maximum coefficient discrepancies
+on the order of $10^{-13}$, consistent with double-precision arithmetic.
+
+% =============================================================================
+\section{Comparison with Batch Methods}
+% =============================================================================
+
+\begin{table}[h]
+  \centering
+  \caption{Online TWFE (chunk API) vs.\ \texttt{plm} (batch)}
+  \begin{tabular}{lcc}
+    \toprule
+    Property & Online TWFE (chunk) & \texttt{plm} \\
+    \midrule
+    Full dataset in RAM required      & No  & Yes \\
+    RAM usage scales with $N$         & No ($O(p^4)$) & Yes ($O(nk)$) \\
+    Feasible at $N = 2 \times 10^7$   & Yes & No (OOM on 16\,GB) \\
+    Algebraically exact               & Yes & Yes \\
+    Cluster-robust SE (Arellano HC0)  & Yes (single pass) & Yes (post-estimation) \\
+    Requires sorted input             & Yes & No \\
+    One-time preprocessing cost       & Yes (sort) & None \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The primary trade-off is that the chunk API requires the dataset to be sorted
+by \texttt{id} in advance.  For a one-time analysis of a persistent dataset,
+this is a mild requirement.  For a truly streaming environment where data are
+generated in unit order (as in the simulation study), sorting is not needed.
+
+% =============================================================================
+\section{Implementation Plan}
+% =============================================================================
+
+\subsection{Files to be Created or Extended}
+
+\textbf{\texttt{Simulation/sim\_dgp.R} (extension):}
+A new function \texttt{make\_panel\_52\_stream()} will be added to the
+existing DGP file.  This function returns a \emph{closure-based iterator} that,
+on each call to \texttt{next\_chunk()}, generates and returns exactly one chunk
+of $C$ units without retaining any state beyond the chunk index, an id offset
+counter, and the pre-generated $\lambda_t$ vector ($T$ scalars).
+
+\textbf{\texttt{Application/streaming\_bigdata.R}:}
+Main demonstration script that exercises the four-phase workflow on datasets of
+increasing size, reports timing and accuracy, and produces the summary table
+for the paper.
+
+\subsection{Streaming DGP Design (\texttt{make\_panel\_52\_stream})}
+
+The function is designed with the following properties:
+
+\begin{itemize}
+  \item \textbf{Minimal pre-allocation.}  At construction, only $\lambda_t$
+        ($T$ scalars) is drawn.  Nothing proportional to $N$ is allocated.
+
+  \item \textbf{Per-chunk generation.}  Each call to \texttt{next\_chunk()}
+        draws $\alpha_i$, $T_i$, calendar time subsets, $X_{it}$, $u_{it}$,
+        and $Y_{it}$ for the next $C$ units, constructs the data frame, and
+        returns it.  The generator's internal state advances by $C$ units.
+
+  \item \textbf{Reproducibility.}  Each chunk uses a seed derived from the
+        global seed and the chunk index.  This ensures that any particular
+        chunk produces the same data regardless of how many chunks have been
+        processed before it.
+
+  \item \textbf{Globally unique IDs.}  Chunk $c$ produces unit IDs from
+        $(c-1)C + 1$ to $\min(cC,\, N_{\mathrm{total}})$, so IDs never
+        repeat and the data are naturally sorted by \texttt{id} within each
+        chunk and across chunks.
+
+  \item \textbf{Termination.}  When all $N_{\mathrm{total}}$ units have been
+        generated, \texttt{next\_chunk()} returns \texttt{NULL}, signalling
+        the end of the stream.
+\end{itemize}
+
+\subsection{Application Script Structure (\texttt{streaming\_bigdata.R})}
+
+The script is organised into three sections:
+
+\textbf{Section 1 --- Correctness verification (small $N$).}
+For $N = 1{,}000$ and $T = 3$, run both the streaming pipeline and
+\texttt{plm}, and confirm that the maximum absolute differences
+\[
+  \|\hat\beta_{\mathrm{online}} - \hat\beta_{\mathrm{plm}}\|_\infty,\quad
+  \|\hat{V}_0^{\mathrm{online}} - \hat{V}_0^{\mathrm{plm}}\|_\infty,\quad
+  \|\hat{V}_{cr}^{\mathrm{online}} - \hat{V}_{cr}^{\mathrm{plm}}\|_\infty
+\]
+are all at machine-precision level ($\lesssim 10^{-13}$).
+
+\textbf{Section 2 --- Scalability benchmark.}
+For $N \in \{10^6,\, 10^7,\, 10^8,\, 5 \times 10^8\}$ (or as large as time
+permits), run the streaming pipeline and record:
+\begin{itemize}
+  \item total wall-clock time (DGP generation + update + finalize);
+  \item peak per-chunk memory (size of one chunk data frame in MB);
+  \item state handle size (constant across $N$, reported once);
+  \item estimation bias $\|\hat\beta - \beta_{\mathrm{true}}\|_\infty$.
+\end{itemize}
+
+\textbf{Section 3 --- Summary table.}
+A formatted table comparing all runs, with a note that \texttt{plm} fails
+beyond $N \approx 2 \times 10^7$ on a 16~GB machine (from the simulation
+benchmark).
+
+% =============================================================================
+\section{Known Limitations and Scope}
+% =============================================================================
+
+\begin{itemize}
+  \item \textbf{Algorithm~3 not used.}  The application module assumes a
+        pre-specified and fixed $T_{\mathrm{support}}$.  If new calendar times
+        were to appear in later chunks, the parameter dimension would need to
+        expand (Algorithm~3), which is not implemented in the current chunk API
+        and is left for future work.
+
+  \item \textbf{New observations for existing units not handled.}
+        The current pipeline assumes all units are new (Algorithm~1 only).
+        Algorithm~2 (new time observation for an existing unit) is not
+        implemented in the chunk API.
+
+  \item \textbf{Sorting cost.}  For very large files, the external sort in
+        Phase~1 may require significant time and temporary disk space.
+        Datasets originating from a database can bypass this by issuing an
+        \texttt{ORDER BY id} query at read time.
+
+  \item \textbf{Boundary scan memory.}  The run-length encoding of the
+        \texttt{id} column produces a vector of $N$ integers ($\sim$400~MB for
+        $N = 10^8$).  For $N \geq 10^9$, this may itself become a memory
+        concern.  A future improvement would read chunks adaptively without a
+        pre-computed boundary table.
+\end{itemize}
+
+\end{document}

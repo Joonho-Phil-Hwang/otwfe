@@ -1,0 +1,30 @@
+# R 관련
+.Rhistory
+.RData
+.Rproj.user/
+*.Rproj
+
+# Rcpp 컴파일 결과물
+src/*.o
+src/*.so
+src/*.dll
+src/RcppExports.R
+*_RcppExports.R
+
+# macOS
+.DS_Store
+
+# 임시 파일
+*.tmp
+*.temp
+*.csv
+
+# Claude Code 설정 (개인 설정이므로 제외)
+.claude/
+
+# LaTeX 빌드 산출물
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
