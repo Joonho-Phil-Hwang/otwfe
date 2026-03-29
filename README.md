@@ -79,12 +79,6 @@ Unit $i$ already in the sample receives a new observation at a calendar time $t 
 
 **Key idea:** The individual mean $\bar{Z}_i$ shifts when $T_i \to T_i + 1$. The within deviation of the new observation depends on the current $\bar{Z}_i$. A scalar Sherman–Morrison update suffices.
 
-**State updates (Props 4–6):**
-
-$$(\dot{Z}^{*\prime}\dot{Z}^*)^{-1} = \left(I - s_{i,t^*}(\dot{Z}'\dot{Z})^{-1}\dot{z}_{i,t^*}\dot{z}_{i,t^*}'\right)(\dot{Z}'\dot{Z})^{-1}$$
-
-where $s_{i,t^*} = \kappa_i / (1 + \kappa_i h_{i,t^*})$, $\kappa_i = T_i/(T_i+1)$, $h_{i,t^*} = \dot{z}_{i,t^*}'(\dot{Z}'\dot{Z})^{-1}\dot{z}_{i,t^*}$.
-
 > **Note:** Only the within-transformed quantities of unit $i$ change. All other units' contributions remain unchanged.
 
 ### Algorithm 3 — New Calendar Time (New Time Dummy Required)
@@ -92,12 +86,6 @@ where $s_{i,t^*} = \kappa_i / (1 + \kappa_i h_{i,t^*})$, $\kappa_i = T_i/(T_i+1)
 A new calendar time $T+1$ not previously observed appears. The parameter dimension increases: $p \to p+1$.
 
 **Key idea:** The new time dummy equals 0 for all pre-update observations. This zero-extension property allows the existing $(\dot{Z}'\dot{Z})^{-1}$ to be embedded exactly into the larger $(p+1) \times (p+1)$ inverse matrix without any costly recomputation.
-
-**State updates (Props 7–9):**
-
-$$(\dot{Z}^{*\prime}\dot{Z}^*)^{-1} = \begin{pmatrix} (\dot{Z}'\dot{Z})^{-1} + \frac{q q'}{g_2^2} & -q/g_2 \\ -q'/g_2 & (1+\kappa h)/(\kappa g_2^2) \end{pmatrix}$$
-
-where $q = (\dot{Z}'\dot{Z})^{-1}g$, $h = g'q$, $g_2 = 1$ (within deviation of new dummy = 1).
 
 > **Zero-extension:** All stored per-unit objects ($S_i$, $s_i$, $\bar{Z}_i$) are extended to $p+1$ dimensions by appending zeros—valid because the new time dummy was always 0 for pre-update observations.
 
@@ -139,115 +127,246 @@ The greedy warm-up selector chooses the minimum number of units (typically $\max
 
 ---
 
-## Performance
-
-### Memory
-
-| Setting | Full Dataset | otwfe State | Reduction |
-|---|---|---|---|
-| N=100K, T=5, k=5 | ~100 MB | ~0.14 MB | **>99%** |
-| N=1M, T=5, k=5 | ~1 GB | ~0.14 MB | **>99.9%** |
-
-The global state size is $O(p^2)$, independent of $N$.
-
-### Speed (Apple M-series, arm64)
-
-| N | plm offline | otwfe (Rcpp) | otwfe (pure R) |
-|---|---|---|---|
-| 10,000 | < 1s | **0.6s** | 3.1s |
-| 100,000 | ~5s | **5.6s** | 57s |
-| 1,000,000 | ~61s* | **~55s** | ~82min |
-
-\* plm does not compute cluster-robust SE at N=1M in the table above; `vcovHC` would take additional time.
-
-Speed comes from Rcpp (C++ via RcppArmadillo): streaming new units are processed in a two-pass C++ loop, replacing $N$ sequential R-level Woodbury updates with a single matrix inversion.
-
----
-
 ## Installation
 
 ```r
-# Development version (from source)
-# Requires: R >= 4.0, Rcpp, RcppArmadillo, plm (for benchmarking)
-install.packages(c("Rcpp", "RcppArmadillo"))
+# Requires: R >= 4.0, Rcpp, RcppArmadillo, data.table
+install.packages(c("Rcpp", "RcppArmadillo", "data.table"))
 
-# Then in the project directory:
+# Source the core file from the project root:
 setwd("path/to/claude_code")
 source("online_twfe_core.R")
+
+# For large-scale CSV analysis:
+source("uni/otwfe_file.R")
 ```
 
-> **Note:** A full CRAN-installable package (`otwfe`) is in development.
+> **Note:** `online_twfe_core.R` automatically compiles `src/alg1_batch.cpp` via Rcpp on first load. If compilation fails, it falls back to a pure-R implementation.
 
 ---
 
 ## Usage
 
+### In-memory estimation (`otwfe`)
+
+For moderate-sized panels that fit in memory:
+
 ```r
-library(plm)    # for comparison
 source("online_twfe_core.R")
 
-# Synthetic unbalanced panel: N=1,000, T_max=5, k=3
-set.seed(42)
-N <- 1000L;  T_max <- 5L;  k <- 3L
-x_cols <- paste0("x", seq_len(k))
-
-T_i_vec <- sample(2L:T_max, N, replace = TRUE)
-df <- do.call(rbind, lapply(seq_len(N), function(i) {
-  Ti  <- T_i_vec[i]
-  X   <- matrix(rnorm(Ti * k), Ti, k, dimnames = list(NULL, x_cols))
-  y   <- rnorm(1) + c(0, .5, -.3, .8, -.2)[seq_len(Ti)] + X %*% c(1, -.5, .8) + rnorm(Ti, sd=.5)
-  data.frame(id = i, time = seq_len(Ti), y = y, X)
-}))
-
-# --- Online estimation ---
 fit <- otwfe(
-  data            = df,
-  id_col          = "id",
-  time_col        = "time",
-  y_col           = "y",
-  x_cols          = x_cols,
-  track_all_units = FALSE,   # memory-efficient mode (default)
-  verbose         = TRUE
+  data     = df,
+  id_col   = "id",
+  time_col = "time",
+  y_col    = "y",
+  x_cols   = c("x1", "x2"),
+  verbose  = TRUE
 )
 
 # Coefficients
-fit$state$theta_hat[x_cols]
+fit$state$theta_hat[c("x1", "x2")]
 
 # Classical standard errors
-sqrt(diag(fit$state$sigma2_hat * fit$state$inv_dotZtZ[x_cols, x_cols]))
+sqrt(diag(fit$state$sigma2_hat * fit$state$inv_dotZtZ)[c("x1", "x2")])
 
 # Cluster-robust standard errors (Arellano HC0)
-sqrt(diag(fit$state$Vcr_hat[x_cols, x_cols]))
+sqrt(diag(fit$state$Vcr_hat)[c("x1", "x2")])
 ```
 
-### Key Parameters
+### Large-scale CSV analysis (`otwfe_file`)
 
-| Parameter | Description | Default |
-|---|---|---|
-| `track_all_units` | Store per-unit state for every streaming unit | `FALSE` |
-| `warmup_ids` | Manually specify warm-up unit IDs | `NULL` (auto) |
-| `warmup_n` | Minimum number of warm-up units | `max(3p, 30)` |
-| `baseline_time` | Omitted time dummy for identification | `min(time)` |
-| `verbose` | Print progress | `TRUE` |
+For datasets too large to load into memory, `otwfe_file()` reads directly from a CSV file in chunks. The full dataset is **never materialized in R**—only one chunk (~80–100 MB) and a compact state object (~0.02 MB) reside in memory at any time.
 
-### `track_all_units`
+```r
+source("uni/otwfe_file.R")
 
-- `FALSE` (default): Only warm-up unit states are stored. Streaming units processed via Rcpp batch Algorithm 1. Memory usage is $O(p^2)$ regardless of $N$. Algorithms 2 and 3 are unavailable for streaming units.
-- `TRUE`: Per-unit state stored for all units. Supports Algorithms 2 and 3 for future updates. Memory usage is $O(N \times p^2)$.
+result <- otwfe_file(
+  path       = "/path/to/large_panel.csv",
+  id_col     = "id",
+  time_col   = "time",
+  y_col      = "y",
+  x_cols     = c("x1", "x2"),
+  chunk_size = 2e6L,   # rows per chunk (default 1e6)
+  verbose    = TRUE
+)
+```
+
+**Prerequisites for `otwfe_file()`:**
+
+- File must be **sorted by `id_col`** (non-decreasing). Each unit's observations must be contiguous.
+- File format: **CSV** with a header row.
+- `time_col` can contain arbitrary integer values (e.g., years `{2020, 2021, 2022}`); they are automatically remapped to `{1, ..., T}` internally.
+
+**Output:**
+
+```
+  추정 결과 (x 변수):
+                    coef        SE    SE(CR)        t
+    ----------------------------------------------------
+    x1            1.3002    0.0002    0.0002  6498.97
+    x2           -0.7002    0.0002    0.0002  -3500.48
+    ----------------------------------------------------
+    * SE    : classical variance 기반 표준오차
+    * SE(CR): HC0 cluster-robust variance 기반 표준오차 (Arellano)
+```
+
+---
+
+## How `otwfe_file()` Works: 5-Step Pipeline
+
+```
+CSV File (sorted by id)
+        │
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  Step 1: T_support Detection                              │
+│  ─────────────────────────────────────────────────────    │
+│  - File connection 유지 → 순차 읽기 (재스캔 없음)          │
+│  - 100K행 청크 단위로 time 컬럼만 추출                     │
+│  - 새 time 값이 없는 청크가 5회 연속이면 조기 종료          │
+│  - 정렬된 패널에서 보통 수십만 행 이내에서 완료             │
+│  → T_support, time_remap({year} → {1,...,T}) 확정         │
+└───────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  Step 2: Initialization Chunk Assembly                    │
+│  ─────────────────────────────────────────────────────    │
+│  - chunk_size 행씩 읽어 누적                               │
+│  - 모든 T calendar time이 포함될 때까지 누적               │
+│  - 마지막 unit 경계(unit boundary) 탐지                    │
+│  - 불완전한 마지막 unit은 다음 단계로 이월(carry-over)      │
+└───────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  Step 3: State Initialization (Warm-up)                   │
+│  ─────────────────────────────────────────────────────    │
+│  - 초기 청크에서 greedy 방식으로 warm-up units 선택         │
+│  - warm-up은 모든 T time period를 반드시 커버              │
+│  - otwfe_init() + otwfe_update()로 초기 state 구성        │
+└───────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  Step 4: Adaptive Chunked Processing                      │
+│  ─────────────────────────────────────────────────────    │
+│  - chunk_size 행씩 반복 읽기                               │
+│  - 각 청크: carry-over 병합 → unit boundary 탐지           │
+│  - 완전한 units만 otwfe_update()로 전달                    │
+│  - 불완전한 마지막 unit → 다음 청크로 carry-over            │
+│  - Rcpp 배치 처리: C++ 2-pass로 다수 unit 일괄 업데이트     │
+└───────────────────────────────────────────────────────────┘
+        │
+        ▼
+┌───────────────────────────────────────────────────────────┐
+│  Step 5: Finalize                                         │
+│  ─────────────────────────────────────────────────────    │
+│  - otwfe_finalize()로 최종 theta_hat, Vcr_hat 계산        │
+│  - 결과 출력: coef / SE / SE(CR) / t                      │
+└───────────────────────────────────────────────────────────┘
+        │
+        ▼
+   State (~0.02 MB)
+   theta_hat, Vcr_hat, inv_dotZtZ, sigma2_hat
+```
+
+### Unit Atomicity
+
+`otwfe_file()` ensures that all observations for each unit are processed together. The `chunk_size` parameter controls the number of **rows** per read, but each chunk is trimmed at a unit boundary before being passed to `otwfe_update()`. Observations for a unit that straddles a chunk boundary are carried over to the next chunk.
+
+### Time Remapping
+
+Any monotone integer sequence can serve as `time_col` values (e.g., `{2020, 2021, 2022}` or `{1, 3, 5}`). `otwfe_file()` automatically detects all distinct time values in Step 1 and remaps them to `{1, ..., T}` before passing to the core algorithm.
+
+---
+
+## Performance
+
+### Memory
+
+The global state is $O(p^2)$, fixed regardless of $N$:
+
+| Setting | CSV Size | otwfe State | plm |
+|---|---|---|---|
+| N=1M, T=5, k=2 | 221 MB | **0.02 MB** | 112 MB (in-memory) |
+| N=5M, T=5, k=2 | 1.1 GB | **0.02 MB** | 560 MB (in-memory) |
+| N=10M, T=5, k=2 | 2.2 GB | **0.02 MB** | 1.1 GB (in-memory) |
+| N=20M, T=5, k=2 | 4.5 GB | **0.02 MB** | OOM |
+| N=50M, T=5, k=2 | 11 GB | **0.02 MB** | OOM |
+
+### Speed: `otwfe_file` vs `plm` (T=5, k=2, Apple M-series)
+
+| N | otwfe_file | pdata.frame | plm() | vcov() | vcovHC() | θ diff vs plm |
+|---|---|---|---|---|---|---|
+| 1M | 15초 | 1.4초 | 6.7초 | 0.0초 | 16.2초 | **8.9e-15** |
+| 5M | 63초 | 8.8초 | 43초 | 0.0초 | 80초 | **3.0e-14** |
+| 10M | 131초 | 13초 | 151초 | 0.0초 | **FAIL** (OOM) | 3.6e-14 |
+| 20M | 308초 | 49초 | **FAIL** (OOM) | — | — | — |
+| 50M | 2218초 | **FAIL** (OOM) | — | — | — | — |
+
+- plm OOM 한계: `vcovHC()` → N≥10M, `plm()` → N≥20M, `pdata.frame()` → N≥50M
+- `otwfe_file`은 N=50M (관측치 1.75억, CSV 11GB)에서도 **state 0.02MB**만으로 완료
+
+### Step 1 (T_support Detection) Optimization
+
+파일 커넥션 기반 순차 읽기 + 조기 종료로 time 탐지 시간이 대폭 단축됩니다:
+
+| N (CSV) | 이전 (`fread` 전체 스캔) | 이후 (조기 종료) | 스캔 행 수 |
+|---|---|---|---|
+| 5M (1.1 GB) | 2.1초 | 1.0초 | 600K행 |
+| 10M (2.2 GB) | 1.4초 | 2.2초 | 600K행 |
+| 20M (4.5 GB) | **1,097초** | **19초** | 600K행 |
 
 ---
 
 ## Accuracy
 
-All three estimates match the offline `plm` benchmark at machine precision:
+`otwfe_file()` matches offline `plm` at machine precision (where plm is computable):
 
 ```
-N = 1,000,000 | T_max = 5 | k = 5 | unbalanced T_i ∈ {2,...,5}
+N = 1,000,000 | T = 5 | k = 2 | unbalanced T_i ∈ {2,...,5}
 
-  theta  max|diff| vs plm : 6.2e-14   (< 1e-10 ✓)
-  V0     max|diff| vs plm : 5.5e-21   (< 1e-10 ✓)
-  Vcr    max|diff| vs plm : 8.9e-21   (< 1e-10 ✓)
+  theta  max|diff| vs plm : 8.9e-15   (< 1e-10 ✓)
+  V0     max|diff| vs plm : 8.8e-19   (< 1e-10 ✓)
+  Vcr    max|diff| vs plm : 5.5e-20   (< 1e-10 ✓)
+
+N = 5,000,000 | T = 5 | k = 2
+
+  theta  max|diff| vs plm : 3.0e-14   (< 1e-10 ✓)
+  V0     max|diff| vs plm : 2.0e-19   (< 1e-10 ✓)
+  Vcr    max|diff| vs plm : 2.1e-20   (< 1e-10 ✓)
 ```
+
+---
+
+## Key Parameters
+
+### `otwfe()`
+
+| Parameter | Description | Default |
+|---|---|---|
+| `data` | `data.frame` (id 기준 정렬 권장) | — |
+| `id_col` | 개인 식별자 컬럼명 | — |
+| `time_col` | calendar time 컬럼명 | — |
+| `y_col` | 종속변수 컬럼명 | — |
+| `x_cols` | 공변량 컬럼명 벡터 | — |
+| `track_all_units` | 모든 unit의 per-unit state 저장 | `FALSE` |
+| `chunk_size` | 청크 당 unit 수 (Rcpp 배치) | `1e6L` |
+| `verbose` | 진행 상황 출력 | `TRUE` |
+
+### `otwfe_file()`
+
+| Parameter | Description | Default |
+|---|---|---|
+| `path` | CSV 파일 경로 (id 기준 정렬 필수) | — |
+| `id_col` | 개인 식별자 컬럼명 | — |
+| `time_col` | calendar time 컬럼명 | — |
+| `y_col` | 종속변수 컬럼명 | — |
+| `x_cols` | 공변량 컬럼명 벡터 | — |
+| `chunk_size` | 청크 당 최대 행 수 | `1e6L` |
+| `sep` | CSV 구분자 | `","` |
+| `verbose` | 진행 상황 출력 | `TRUE` |
 
 ---
 
@@ -255,14 +374,25 @@ N = 1,000,000 | T_max = 5 | k = 5 | unbalanced T_i ∈ {2,...,5}
 
 ```
 claude_code/
-├── online_twfe_core.R       # Main implementation (otwfe + Algorithms 1–3)
+├── online_twfe_core.R          # 핵심 알고리즘 (otwfe_init/update/finalize)
+├── online_twfe_core_Ronly.R    # 순수 R 구현 (Rcpp 없이)
+├── online_twfe.R               # 래퍼 함수 (otwfe)
 ├── src/
-│   └── alg1_batch.cpp       # Rcpp batch Algorithm 1 (two-pass C++)
-├── online_twfe_sim.R        # Simulation utilities
-├── test_large.R             # Benchmark: N=1M vs plm
-├── test_rcpp.R              # Accuracy verification (N=200)
-├── test_bench.R             # Speed comparison: Rcpp vs pure-R
-├── online_algorithms.pdf    # Working paper (Hwang & Lee, 2026)
+│   └── alg1_batch.cpp          # Rcpp 배치 Algorithm 1 (C++ 2-pass)
+├── uni/
+│   ├── otwfe_file.R            # 대용량 CSV 분석 함수 (otwfe_file)
+│   ├── test_otwfe_file.R       # 정확도 검증: N=2000, plm 비교
+│   ├── test_otwfe_file2.R      # 대용량 검증: T=5, N=5M/10M/20M
+│   └── benchmark_vs_plm_T5k2.R # otwfe_file vs plm 벤치마크
+├── Simulation/
+│   ├── sim_dgp.R               # DGP: Hwang & Lee (2026) §5.2
+│   ├── benchmark_vs_plm.R      # 벤치마크 (T=3)
+│   ├── benchmark_vs_plm_T3k2.R # 벤치마크 (T=3, k=2, 대용량)
+│   └── ...                     # 기타 시뮬레이션/검증 스크립트
+├── Application/
+│   ├── application_design.pdf  # 설계 문서
+│   └── application_design.tex
+├── online_algorithms.pdf        # 워킹 페이퍼 (Hwang & Lee, 2026)
 └── README.md
 ```
 
@@ -286,6 +416,13 @@ $$\hat{V}_{\text{CR}} = (\dot{Z}'\dot{Z})^{-1} \hat{M} (\dot{Z}'\dot{Z})^{-1}, \
 
 Updating $\hat{M}$ requires $r_i = s_i - S_i\hat{\beta}$, which depends on the **final** $\hat{\beta}$. In the Rcpp batch implementation, a two-pass approach computes all $S_i$, $s_i$ in Pass 1 (to obtain $\hat{\beta}_{\text{new}}$), then recomputes $r_i$ in Pass 2—without storing raw data.
 
+### `fread(skip=n)` vs File Connection
+
+`data.table::fread(skip=n)` re-reads the file from the beginning each time, causing $O(n^2)$ total I/O for $n$ chunks. `otwfe_file()` uses:
+
+- **Step 1**: `file()` connection + `readLines()` — position maintained across calls, no re-scanning
+- **Step 2–4**: `fread(skip=n)` — acceptable because chunk count is small (typically 10–100 chunks for large files)
+
 ---
 
 ## References
@@ -293,7 +430,7 @@ Updating $\hat{M}$ requires $r_i = s_i - S_i\hat{\beta}$, which depends on the *
 - **Hwang, J. & Lee, S. (2026).** *Online Updating for Linear Panel Regressions.* Working paper.
 - Arellano, M. (1987). Computing robust standard errors for within-groups estimators. *Oxford Bulletin of Economics and Statistics*, 49(4), 431–434.
 - Woodbury, M. A. (1950). Inverting modified matrices. *Memorandum Report 42, Statistical Research Group, Princeton University.*
-- Sherman, J. & Morrison, W. J. (1950). Adjustment of an inverse matrix corresponding to a change in one element of a given matrix. *Annals of Mathematical Statistics*, 21(1), 124–127.
+- Sherman, J. & Morrison, W. J. (1950). Adjustment of an inverse matrix corresponding to a change in one element of a given matrix. *Annals of Mathematical Statistics*, 21(1), 124–131.
 
 ---
 
