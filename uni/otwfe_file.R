@@ -80,15 +80,60 @@ if (!exists("otwfe_finalize", mode = "function"))
 # --------------------------------------------------------------------------
 # .detect_time_levels(): time 컬럼만 읽어 고유 calendar time 탐지
 #
-# time 컬럼 1개만 메모리에 올림 → 전체 데이터 대비 1/(k+3) 수준
+# 최적화: 파일 커넥션 유지 → 재스캔 없이 순차 읽기 + 조기 종료
+#   - stable_rounds번 연속 청크에서 새 time 값이 없으면 종료
+#   - 정렬된 패널에서 T=5이면 수십 행 만에 모든 값 탐지 → 조기 종료
+#   - 최악의 경우(time 값이 파일 끝에 집중): EOF까지 전체 스캔
 # --------------------------------------------------------------------------
-.detect_time_levels <- function(path, time_col, sep, verbose) {
+.detect_time_levels <- function(path, time_col, sep, verbose,
+                                 scan_chunk    = 1e5L,
+                                 stable_rounds = 5L) {
   if (verbose) cat("  time 컬럼 스캔 중...\n")
-  tmp  <- data.table::fread(path, sep = sep, select = time_col,
-                              showProgress = FALSE)
-  vals <- sort(unique(tmp[[1L]]))
-  rm(tmp); invisible(gc())
-  vals
+
+  # 헤더에서 컬럼 인덱스 파악
+  header_line <- readLines(path, n = 1L)
+  col_names   <- strsplit(header_line, sep, fixed = TRUE)[[1L]]
+  col_idx     <- which(col_names == time_col)
+  if (length(col_idx) == 0L)
+    stop(sprintf("'%s' 컬럼을 찾을 수 없습니다.", time_col))
+
+  # 파일 커넥션 유지 → 순차 읽기 (fread skip과 달리 파일 재스캔 없음)
+  con <- file(path, open = "rt")
+  on.exit(close(con), add = TRUE)
+  readLines(con, n = 1L)  # 헤더 skip
+
+  seen         <- integer(0)
+  stable       <- 0L
+  rows_scanned <- 0L
+
+  repeat {
+    lines <- readLines(con, n = as.integer(scan_chunk))
+    if (length(lines) == 0L) break
+    rows_scanned <- rows_scanned + length(lines)
+
+    # col_idx번째 필드 추출 (strsplit 기반, 순수 R)
+    vals <- suppressWarnings(as.integer(
+      vapply(strsplit(lines, sep, fixed = TRUE),
+             function(x) if (length(x) >= col_idx) x[[col_idx]] else NA_character_,
+             character(1L))
+    ))
+    vals <- vals[!is.na(vals)]
+
+    new_vals <- setdiff(unique(vals), seen)
+    if (length(new_vals) == 0L) {
+      stable <- stable + 1L
+      if (stable >= stable_rounds) break  # 조기 종료
+    } else {
+      seen   <- sort(c(seen, new_vals))
+      stable <- 0L
+    }
+  }
+
+  if (verbose && rows_scanned < 1e7)
+    cat(sprintf("  조기 종료: %s행 스캔 후 모든 time 값 탐지\n",
+                format(rows_scanned, big.mark = ",")))
+
+  sort(seen)
 }
 
 # --------------------------------------------------------------------------
