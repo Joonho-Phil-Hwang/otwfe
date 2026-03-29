@@ -11,7 +11,7 @@
 
 ## Overview
 
-`otwfe` implements **algebraically exact online updating** for Two-Way Fixed Effects (TWFE) panel regression. When new data arrives sequentially—unit by unit or observation by observation—`otwfe` updates the TWFE estimates **without ever revisiting the full historical dataset**.
+`otwfe` implements **algebraically exact online updating** for Two-Way Fixed Effects (TWFE) panel regression. When new data arrives sequentially, `otwfe` updates the TWFE estimates **without ever revisiting the full historical dataset**.
 
 The key guarantee is not an approximation:
 
@@ -31,7 +31,7 @@ Consider a linear panel regression model with individual fixed effects $\alpha_i
 
 $$Y_{it} = \alpha_i + \lambda_t + X_{it}'\beta + \varepsilon_{it}$$
 
-Standard estimation requires storing and processing the entire dataset. For panels with $N = 10^6$ units and $T = 5$ periods, this means holding tens of millions of rows in memory and re-running OLS every time new data arrives.
+Standard estimation requires storing and processing the entire dataset. For panels with $N = 10^6$ units and $T = 5$ periods, this means holding tens of millions of rows in memory and re-running OLS every time new data arrives, which is time-consuming and (sometimes) infeasible.
 
 **`otwfe` breaks this bottleneck.** It maintains a compact *state object* of size $O(p^2)$ (where $p = k + T - 1$ is the number of regressors), and updates the state incrementally as each new unit or observation arrives. No raw data needs to be stored after processing.
 
@@ -294,10 +294,3 @@ Updating $\hat{M}$ requires $r_i = s_i - S_i\hat{\beta}$, which depends on the *
 - Arellano, M. (1987). Computing robust standard errors for within-groups estimators. *Oxford Bulletin of Economics and Statistics*, 49(4), 431–434.
 - Woodbury, M. A. (1950). Inverting modified matrices. *Memorandum Report 42, Statistical Research Group, Princeton University.*
 - Sherman, J. & Morrison, W. J. (1950). Adjustment of an inverse matrix corresponding to a change in one element of a given matrix. *Annals of Mathematical Statistics*, 21(1), 124–127.
-
----
-
-## Author
-
-**Joonho Hwang** — PhD student, Econometrics
-Research focus: Online inference for large-scale panel data
