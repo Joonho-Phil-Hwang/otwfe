@@ -11,15 +11,7 @@ Based on Hwang & Lee (2026).
 ## Installation
 
 ```r
-# Install from GitHub
 remotes::install_github("Joonho-Phil-Hwang/otwfe")
-```
-
-Or load directly from source for development:
-
-```r
-library(devtools)
-load_all(".")   # run from the package root directory
 ```
 
 ---
@@ -51,7 +43,7 @@ summary(fit)
 
 ### File-based estimation: `otwfe_file()`
 
-For datasets too large to load into memory. The file must be sorted by `id_col`.
+For datasets too large to load into RAM at once. Reads the CSV in chunks and updates the state sequentially — the full dataset is never held in memory. The file must be sorted by `id_col`.
 
 ```r
 fit <- otwfe_file(
@@ -65,18 +57,6 @@ fit <- otwfe_file(
 ```
 
 All S3 methods (`coef`, `vcov`, `nobs`, `confint`, `print`, `summary`) work identically on results from both functions.
-
-### Low-level streaming API
-
-For fine-grained control over chunked processing:
-
-```r
-handle <- otwfe_init(x_cols = c("x1", "x2"), time_col = "time",
-                     id_col = "id", y_col = "y", T_support = 5L)
-handle <- otwfe_update(handle, chunk1)
-handle <- otwfe_update(handle, chunk2)
-fit    <- otwfe_finalize(handle)
-```
 
 ---
 
