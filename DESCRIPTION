@@ -1,0 +1,28 @@
+Package: otwfe
+Type: Package
+Title: Online Updating for Two-Way Fixed Effects Panel Regression
+Version: 0.1.0
+Authors@R: person("Joonho", "Hwang", role = c("aut", "cre"),
+                  email = "joonhohwang@example.com")
+Description: Algebraically exact online updating of two-way fixed effects (TWFE)
+    panel regression estimators. Supports sequential updating of coefficients,
+    classical variance, and cluster-robust variance (HC0, Arellano 1987) without
+    revisiting historical data. Handles large CSV files via adaptive chunked
+    reading. Based on Hwang & Lee (2026).
+License: MIT + file LICENSE
+Encoding: UTF-8
+LazyData: true
+RoxygenNote: 7.3.2
+Depends:
+    R (>= 4.0.0)
+Imports:
+    Rcpp (>= 1.0.0),
+    data.table (>= 1.14.0)
+Suggests:
+    plm,
+    broom,
+    testthat (>= 3.0.0)
+LinkingTo:
+    Rcpp,
+    RcppArmadillo
+Config/testthat/edition: 3

@@ -12,30 +12,7 @@
 #   - Algebraically exact: matches plm to machine precision
 #
 # Prerequisite: file must be sorted by id_col (non-decreasing)
-#
-# Written: 2026-03-28
 # =============================================================================
-
-# --------------------------------------------------------------------------
-# Dependency check
-# --------------------------------------------------------------------------
-if (!requireNamespace("data.table", quietly = TRUE))
-  stop("The 'data.table' package is required: install.packages('data.table')")
-
-# Auto-detect and load online_twfe_core.R
-.uni_core_path <- local({
-  self     <- tryCatch(normalizePath(sys.frame(1L)$ofile), error = function(e) NULL)
-  args     <- commandArgs(trailingOnly = FALSE)
-  rscript  <- tryCatch({
-    f <- sub("--file=", "", args[grep("--file=", args)])
-    if (length(f) == 1L && nchar(f) > 0L) normalizePath(f) else NULL
-  }, error = function(e) NULL)
-  cand     <- Filter(Negate(is.null), list(self, rscript))
-  dir_path <- if (length(cand) > 0L) dirname(cand[[1L]]) else "."
-  file.path(dir_path, "..", "online_twfe_core.R")
-})
-if (!exists("otwfe_finalize", mode = "function"))
-  source(.uni_core_path, local = FALSE)
 
 # =============================================================================
 # Internal helper functions
