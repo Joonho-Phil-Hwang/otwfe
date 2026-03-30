@@ -1,30 +1,35 @@
-# R 관련
+# R
 .Rhistory
 .RData
 .Rproj.user/
 *.Rproj
 
-# Rcpp 컴파일 결과물
+# Rcpp auto-generated files
 src/*.o
 src/*.so
 src/*.dll
-src/RcppExports.R
-*_RcppExports.R
+src/RcppExports.cpp
+R/RcppExports.R
 
 # macOS
 .DS_Store
 
-# 임시 파일
+# Temp files
 *.tmp
 *.temp
 *.csv
 
-# Claude Code 설정 (개인 설정이므로 제외)
+# Claude Code settings
 .claude/
 
-# LaTeX 빌드 산출물
+# LaTeX build artifacts
 *.aux
 *.log
 *.out
 *.toc
 *.synctex.gz
+
+# Research documents (not part of package)
+online_algorithms.pdf
+Application/
+CLAUDE.md
