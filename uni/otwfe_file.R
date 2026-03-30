@@ -1,28 +1,28 @@
 # =============================================================================
 # otwfe_file.R
 #
-# 대용량 CSV 패널 데이터를 메모리 초과 없이 분석하는 범용 함수
-# otwfe_init / otwfe_update / otwfe_finalize 파이프라인을 내부적으로 사용
+# Large-scale CSV panel data analysis without loading the full file into memory.
+# Uses the otwfe_init / otwfe_update / otwfe_finalize pipeline internally.
 #
-# 핵심 특성:
-#   - 전체 데이터를 메모리에 올리지 않음
-#   - chunk 단위 적응형 읽기 (unit 경계 자동 탐지)
-#   - time 컬럼 전체 스캔으로 T_support 자동 탐지
-#   - time 값 자동 재인덱싱 (1..T), 임의 정수/연도 형식 지원
-#   - plm과 algebraically exact하게 동일한 결과 보장
+# Key properties:
+#   - Full dataset is never materialized in R memory
+#   - Adaptive chunked reading with automatic unit-boundary detection
+#   - Automatic T_support detection via early-termination time-column scan
+#   - Automatic time remapping to {1,...,T} (supports arbitrary integer / year values)
+#   - Algebraically exact: matches plm to machine precision
 #
-# 전제 조건: 파일이 id 기준 비내림차순으로 정렬돼 있어야 함
+# Prerequisite: file must be sorted by id_col (non-decreasing)
 #
-# 작성: 2026-03-28
+# Written: 2026-03-28
 # =============================================================================
 
 # --------------------------------------------------------------------------
-# 의존성 확인
+# Dependency check
 # --------------------------------------------------------------------------
 if (!requireNamespace("data.table", quietly = TRUE))
-  stop("data.table 패키지가 필요합니다: install.packages('data.table')")
+  stop("The 'data.table' package is required: install.packages('data.table')")
 
-# online_twfe_core.R 자동 탐지 및 로드
+# Auto-detect and load online_twfe_core.R
 .uni_core_path <- local({
   self     <- tryCatch(normalizePath(sys.frame(1L)$ofile), error = function(e) NULL)
   args     <- commandArgs(trailingOnly = FALSE)
@@ -38,34 +38,32 @@ if (!exists("otwfe_finalize", mode = "function"))
   source(.uni_core_path, local = FALSE)
 
 # =============================================================================
-# 내부 헬퍼 함수
+# Internal helper functions
 # =============================================================================
 
 # --------------------------------------------------------------------------
-# .csv_col_names(): CSV 헤더에서 컬럼명 읽기
+# .csv_col_names(): read column names from CSV header
 # --------------------------------------------------------------------------
 .csv_col_names <- function(path, sep) {
   names(data.table::fread(path, sep = sep, nrows = 0L, showProgress = FALSE))
 }
 
 # --------------------------------------------------------------------------
-# .csv_read_chunk(): CSV에서 row_offset 이후 n_rows 행 읽기
+# .csv_read_chunk(): read n_rows rows from path starting after row_offset
 #
-# row_offset: 이미 읽은 데이터 행 수 (헤더 제외)
-# n_rows    : 읽을 행 수
-# 반환값    : data.frame 또는 NULL (EOF)
+# row_offset: number of data rows already read (excluding header)
+# n_rows    : number of rows to read
+# returns   : data.frame or NULL (EOF)
 # --------------------------------------------------------------------------
 .csv_read_chunk <- function(path, col_names, sep, row_offset, n_rows) {
   tryCatch({
     if (row_offset == 0L) {
-      # 첫 번째 읽기: 헤더 포함
       chunk <- data.table::fread(path, sep = sep, nrows = n_rows,
                                   showProgress = FALSE)
     } else {
-      # 이후 읽기: 헤더(1행) + 기읽은 데이터 행 건너뜀
       chunk <- data.table::fread(
         path, sep = sep,
-        skip      = row_offset + 1L,   # +1은 헤더 행
+        skip      = row_offset + 1L,   # +1 for header row
         nrows     = n_rows,
         header    = FALSE,
         col.names = col_names,
@@ -78,29 +76,30 @@ if (!exists("otwfe_finalize", mode = "function"))
 }
 
 # --------------------------------------------------------------------------
-# .detect_time_levels(): time 컬럼만 읽어 고유 calendar time 탐지
+# .detect_time_levels(): detect unique calendar times via early-termination scan
 #
-# 최적화: 파일 커넥션 유지 → 재스캔 없이 순차 읽기 + 조기 종료
-#   - stable_rounds번 연속 청크에서 새 time 값이 없으면 종료
-#   - 정렬된 패널에서 T=5이면 수십 행 만에 모든 값 탐지 → 조기 종료
-#   - 최악의 경우(time 값이 파일 끝에 집중): EOF까지 전체 스캔
+# Optimization: maintains a file connection (no re-scanning) + early exit
+#   - Reads scan_chunk lines at a time, extracts only the time column
+#   - Stops after stable_rounds consecutive chunks with no new time values
+#   - For sorted panels with small T, terminates after a few hundred thousand rows
+#   - Worst case (time values concentrated at end of file): full scan
 # --------------------------------------------------------------------------
 .detect_time_levels <- function(path, time_col, sep, verbose,
                                  scan_chunk    = 1e5L,
                                  stable_rounds = 5L) {
-  if (verbose) cat("  time 컬럼 스캔 중...\n")
+  if (verbose) cat("  Scanning time column...\n")
 
-  # 헤더에서 컬럼 인덱스 파악
+  # Get column index from header
   header_line <- readLines(path, n = 1L)
   col_names   <- strsplit(header_line, sep, fixed = TRUE)[[1L]]
   col_idx     <- which(col_names == time_col)
   if (length(col_idx) == 0L)
-    stop(sprintf("'%s' 컬럼을 찾을 수 없습니다.", time_col))
+    stop(sprintf("Column '%s' not found in file.", time_col))
 
-  # 파일 커넥션 유지 → 순차 읽기 (fread skip과 달리 파일 재스캔 없음)
+  # Maintain file connection — no re-scanning from beginning
   con <- file(path, open = "rt")
   on.exit(close(con), add = TRUE)
-  readLines(con, n = 1L)  # 헤더 skip
+  readLines(con, n = 1L)  # skip header
 
   seen         <- integer(0)
   stable       <- 0L
@@ -111,7 +110,7 @@ if (!exists("otwfe_finalize", mode = "function"))
     if (length(lines) == 0L) break
     rows_scanned <- rows_scanned + length(lines)
 
-    # col_idx번째 필드 추출 (strsplit 기반, 순수 R)
+    # Extract col_idx-th field from each line
     vals <- suppressWarnings(as.integer(
       vapply(strsplit(lines, sep, fixed = TRUE),
              function(x) if (length(x) >= col_idx) x[[col_idx]] else NA_character_,
@@ -122,7 +121,7 @@ if (!exists("otwfe_finalize", mode = "function"))
     new_vals <- setdiff(unique(vals), seen)
     if (length(new_vals) == 0L) {
       stable <- stable + 1L
-      if (stable >= stable_rounds) break  # 조기 종료
+      if (stable >= stable_rounds) break  # early exit
     } else {
       seen   <- sort(c(seen, new_vals))
       stable <- 0L
@@ -130,16 +129,16 @@ if (!exists("otwfe_finalize", mode = "function"))
   }
 
   if (verbose && rows_scanned < 1e7)
-    cat(sprintf("  조기 종료: %s행 스캔 후 모든 time 값 탐지\n",
+    cat(sprintf("  Early exit after scanning %s rows\n",
                 format(rows_scanned, big.mark = ",")))
 
   sort(seen)
 }
 
 # --------------------------------------------------------------------------
-# .find_unit_boundary(): 마지막 완전한 unit의 마지막 행 인덱스 반환
+# .find_unit_boundary(): index of the last row of the last complete unit
 #
-# 반환값: 정수 인덱스 또는 NA (전체가 하나의 unit인 경우)
+# Returns: integer index, or NA if the entire chunk is one unit
 # --------------------------------------------------------------------------
 .find_unit_boundary <- function(df, id_col) {
   ids     <- df[[id_col]]
@@ -147,25 +146,25 @@ if (!exists("otwfe_finalize", mode = "function"))
   if (n == 0L) return(NA_integer_)
   last_id <- ids[n]
   non_last <- which(ids != last_id)
-  if (length(non_last) == 0L) return(NA_integer_)  # 전체가 같은 unit
+  if (length(non_last) == 0L) return(NA_integer_)
   as.integer(max(non_last))
 }
 
 # =============================================================================
-# 주요 함수: otwfe_file()
+# Main function: otwfe_file()
 # =============================================================================
 #'
-#' 대용량 CSV 파일에서 Two-Way Fixed Effects 패널 회귀
+#' Two-Way Fixed Effects regression on a large CSV panel file
 #'
-#' @param path       CSV 파일 경로 (id 기준 정렬 필수)
-#' @param id_col     개인 식별자 컬럼명
-#' @param time_col   calendar time 컬럼명
-#' @param y_col      종속변수 컬럼명
-#' @param x_cols     공변량 컬럼명 벡터
-#' @param chunk_size 청크 당 읽을 최대 행 수 (기본 1,000,000)
-#' @param sep        구분자 (기본 ",")
-#' @param verbose    진행 상황 출력 여부
-#' @return class "otwfe" 객체 (theta_hat, Vcr_hat 등 포함)
+#' @param path       Path to CSV file (must be sorted by id_col)
+#' @param id_col     Name of the unit identifier column
+#' @param time_col   Name of the calendar time column
+#' @param y_col      Name of the dependent variable column
+#' @param x_cols     Character vector of covariate column names
+#' @param chunk_size Maximum number of rows per chunk (default 1,000,000)
+#' @param sep        CSV delimiter (default ",")
+#' @param verbose    Print progress messages
+#' @return An object of class "otwfe"
 #'
 otwfe_file <- function(path,
                        id_col,
@@ -182,48 +181,47 @@ otwfe_file <- function(path,
   sep_m      <- strrep("-", 72)
 
   # -----------------------------------------------------------------------
-  # Step 0: 기본 검증
+  # Step 0: Input validation
   # -----------------------------------------------------------------------
   if (!file.exists(path))
-    stop(sprintf("파일을 찾을 수 없습니다: '%s'", path))
+    stop(sprintf("File not found: '%s'", path))
 
   col_names <- .csv_col_names(path, sep)
   for (col in c(id_col, time_col, y_col, x_cols))
     if (!col %in% col_names)
-      stop(sprintf("컬럼을 찾을 수 없습니다: '%s'", col))
+      stop(sprintf("Column not found in file: '%s'", col))
 
   if (verbose) {
     cat(sprintf("\n%s\n", sep72))
     cat(sprintf("  otwfe_file: %s\n", basename(path)))
     cat(sprintf("  id=%s  time=%s  y=%s  x=(%s)\n",
                 id_col, time_col, y_col, paste(x_cols, collapse = ", ")))
-    cat(sprintf("  chunk_size = %s 행\n", format(chunk_size, big.mark = ",")))
+    cat(sprintf("  chunk_size = %s rows\n", format(chunk_size, big.mark = ",")))
     cat(sprintf("%s\n", sep72))
   }
 
   # -----------------------------------------------------------------------
-  # Step 1: T_support 자동 탐지 (time 컬럼 전체 스캔)
+  # Step 1: T_support detection (early-termination time column scan)
   # -----------------------------------------------------------------------
-  if (verbose) cat("\n[Step 1] T_support 탐지\n")
+  if (verbose) cat("\n[Step 1] Detecting T_support\n")
   t1           <- proc.time()
   time_levels  <- .detect_time_levels(path, time_col, sep, verbose)
   T_support    <- length(time_levels)
-  # 실제 time 값 → 연속 정수 인덱스 (1..T) 매핑
   time_remap   <- setNames(seq_along(time_levels), as.character(time_levels))
-  baseline_idx <- 1L   # 재인덱싱 후 time=1이 기준
+  baseline_idx <- 1L   # after remapping, time = 1 is the baseline
 
   if (verbose)
-    cat(sprintf("  T_support = %d  |  time 범위: %s ~ %s  [%.1f초]\n",
+    cat(sprintf("  T_support = %d  |  time range: %s to %s  [%.1f sec]\n",
                 T_support,
                 time_levels[1L], time_levels[T_support],
                 (proc.time() - t1)[["elapsed"]]))
 
   # -----------------------------------------------------------------------
-  # Step 2: 초기화 청크 구성
-  #   모든 T calendar time이 포함될 때까지 청크를 누적
-  #   → warm-up이 반드시 full T_support를 커버할 수 있도록 보장
+  # Step 2: Build initialization chunk
+  #   Accumulate chunks until all T calendar times are covered,
+  #   ensuring warm-up can always span the full T_support.
   # -----------------------------------------------------------------------
-  if (verbose) cat("\n[Step 2] 초기화 청크 구성 (모든 T time 포함 보장)\n")
+  if (verbose) cat("\n[Step 2] Building initialization chunk (covering all T periods)\n")
   t2        <- proc.time()
   rows_read <- 0L
   init_df   <- NULL
@@ -236,54 +234,52 @@ otwfe_file <- function(path,
     rows_read     <- rows_read + nrow(raw)
     n_init_chunks <- n_init_chunks + 1L
 
-    # time 값 재인덱싱 (1..T)
     raw[[time_col]] <- time_remap[as.character(raw[[time_col]])]
     init_df <- if (is.null(init_df)) raw else rbind(init_df, raw)
 
     times_found <- length(unique(init_df[[time_col]]))
     if (verbose)
-      cat(sprintf("  초기화 청크 %d 누적: %s행,  time 커버 %d/%d\n",
+      cat(sprintf("  Chunk %d accumulated: %s rows,  time coverage %d/%d\n",
                   n_init_chunks,
                   format(nrow(init_df), big.mark = ","),
                   times_found, T_support))
 
-    if (times_found >= T_support) break   # 모든 time 포함됨
+    if (times_found >= T_support) break
     if (nrow(raw) < chunk_size)    break   # EOF
   }
   rm(raw)
 
   if (is.null(init_df))
-    stop("파일에서 데이터를 읽을 수 없습니다.")
+    stop("No data could be read from the file.")
 
   times_in_init <- length(unique(init_df[[time_col]]))
   if (times_in_init < T_support)
     warning(sprintf(
-      "초기화 청크가 일부 calendar time을 포함하지 않습니다 (%d/%d). warm-up 품질이 저하될 수 있습니다.",
+      "Initialization chunk covers only %d/%d time periods. Warm-up quality may be reduced.",
       times_in_init, T_support))
 
-  # 마지막 unit 경계 탐지: 불완전 unit 행은 다음 청크로 이월
+  # Detect unit boundary: incomplete last unit is carried over
   bnd <- .find_unit_boundary(init_df, id_col)
   if (is.na(bnd)) {
-    # 전체 init_df가 하나의 unit (극히 드문 경우)
     first_chunk <- init_df
     carry_over  <- NULL
   } else {
-    first_chunk <- init_df[seq_len(bnd),           , drop = FALSE]
+    first_chunk <- init_df[seq_len(bnd),            , drop = FALSE]
     carry_over  <- init_df[(bnd + 1L):nrow(init_df), , drop = FALSE]
   }
   rm(init_df); invisible(gc())
 
   if (verbose)
-    cat(sprintf("  → 첫 청크: %s행  |  이월: %s행  [%.1f초]\n",
+    cat(sprintf("  -> First chunk: %s rows  |  carry-over: %s rows  [%.1f sec]\n",
                 format(nrow(first_chunk), big.mark = ","),
                 format(if (!is.null(carry_over)) nrow(carry_over) else 0L,
                        big.mark = ","),
                 (proc.time() - t2)[["elapsed"]]))
 
   # -----------------------------------------------------------------------
-  # Step 3: State 초기화 (warm-up 선택 + 첫 청크 Rcpp 배치)
+  # Step 3: State initialization (warm-up selection + first chunk)
   # -----------------------------------------------------------------------
-  if (verbose) cat("\n[Step 3] State 초기화\n")
+  if (verbose) cat("\n[Step 3] State initialization\n")
   handle <- otwfe_init(
     x_cols        = x_cols,
     time_col      = time_col,
@@ -297,10 +293,10 @@ otwfe_file <- function(path,
   rm(first_chunk); invisible(gc())
 
   # -----------------------------------------------------------------------
-  # Step 4: 이후 청크 반복 처리 (적응형 unit 경계 탐지)
+  # Step 4: Adaptive chunked processing with carry-over
   # -----------------------------------------------------------------------
-  if (verbose) cat("\n[Step 4] 청크 처리\n")
-  chunk_idx <- n_init_chunks  # Step 2에서 읽은 청크 수부터 시작
+  if (verbose) cat("\n[Step 4] Processing chunks\n")
+  chunk_idx <- n_init_chunks
 
   repeat {
     raw <- .csv_read_chunk(path, col_names, sep, rows_read, chunk_size)
@@ -310,35 +306,29 @@ otwfe_file <- function(path,
     chunk_idx <- chunk_idx + 1L
     is_eof    <- nrow(raw) < chunk_size
 
-    # time 재인덱싱
     raw[[time_col]] <- time_remap[as.character(raw[[time_col]])]
 
-    # 정렬 순서 검증: carry_over 마지막 id <= raw 첫 번째 id
+    # Sort-order check: last id in carry_over <= first id in new chunk
     if (!is.null(carry_over) && nrow(raw) > 0L) {
       if (carry_over[[id_col]][nrow(carry_over)] > raw[[id_col]][1L])
         stop(sprintf(
-          "id 정렬 오류 (청크 %d): 파일이 id 기준으로 정렬되지 않았습니다.",
-          chunk_idx))
+          "Sort order violation at chunk %d: file must be sorted by '%s'.",
+          chunk_idx, id_col))
     }
 
-    # 이전 이월 행과 합치기
     combined <- if (is.null(carry_over)) raw else rbind(carry_over, raw)
     rm(raw); invisible(gc())
 
     if (is_eof) {
-      # 파일 끝: 모든 unit 완전 처리
       carry_over <- NULL
       handle     <- otwfe_update(handle, combined)
       rm(combined); invisible(gc())
       break
     }
 
-    # 마지막 unit 경계 탐지
     bnd <- .find_unit_boundary(combined, id_col)
 
     if (is.na(bnd)) {
-      # 청크 전체가 하나의 unit (unit이 chunk_size보다 큰 경우)
-      # → 계속 누적 (다음 청크에서 경계 탐지)
       carry_over <- combined
     } else {
       carry_over <- combined[(bnd + 1L):nrow(combined), , drop = FALSE]
@@ -349,62 +339,50 @@ otwfe_file <- function(path,
     }
 
     if (verbose && chunk_idx %% 5L == 0L)
-      cat(sprintf("  청크 %d 완료 | 누적 %s행 처리\n",
+      cat(sprintf("  Chunk %d done | %s rows processed\n",
                   chunk_idx, format(rows_read, big.mark = ",")))
   }
 
-  # 파일 마지막에 남은 carry_over 처리
   if (!is.null(carry_over) && nrow(carry_over) > 0L) {
     handle <- otwfe_update(handle, carry_over)
     rm(carry_over); invisible(gc())
   }
 
   # -----------------------------------------------------------------------
-  # Step 5: 최종 결과 추출
+  # Step 5: Finalize
   # -----------------------------------------------------------------------
-  if (verbose) cat("\n[Step 5] Finalize\n")
+  if (verbose) cat("\n[Step 5] Finalizing\n")
   result <- otwfe_finalize(handle)
-
-  # time 레이블 복원 (재인덱싱 이전 원래 값으로)
-  # theta_hat의 time dummy 이름을 원래 time 값으로 복원
-  orig_names <- names(result$state$theta_hat)
-  for (i in seq_along(time_levels)) {
-    orig_names <- gsub(
-      paste0("(?<![0-9])", i, "(?![0-9])"),
-      as.character(time_levels[i]),
-      orig_names, perl = TRUE
-    )
-  }
 
   t_elapsed <- (proc.time() - t_total)[["elapsed"]]
   if (verbose) {
+    S <- result$state
     cat(sprintf("\n%s\n", sep_m))
-    cat(sprintf("  완료: N=%s units,  n=%s obs,  p=%d\n",
-                format(result$state$N, big.mark = ","),
-                format(result$state$n, big.mark = ","),
-                result$state$p))
-    cat(sprintf("  총 소요: %.1f초  (%.1f분)\n", t_elapsed, t_elapsed / 60))
-    cat(sprintf("  state 크기: %.4f MB\n",
-                as.numeric(object.size(result$state)) / 1e6))
-    cat(sprintf("\n  추정 결과 (x 변수):\n"))
+    cat(sprintf("  Done: N = %s units,  n = %s obs,  p = %d\n",
+                format(S$N, big.mark = ","),
+                format(S$n, big.mark = ","),
+                S$p))
+    cat(sprintf("  Total elapsed: %.1f sec  (%.1f min)\n",
+                t_elapsed, t_elapsed / 60))
+    cat(sprintf("  State size: %.4f MB\n",
+                as.numeric(object.size(S)) / 1e6))
+    cat(sprintf("\n  Estimates (x covariates):\n"))
     cat(sprintf("    %-10s  %8s  %8s  %8s  %7s\n",
                 "", "coef", "SE", "SE(CR)", "t"))
     cat(sprintf("    %s\n", strrep("-", 52)))
-    theta <- result$state$theta_hat[x_cols]
-    se_cl <- sqrt(diag(result$state$sigma2_hat *
-                       result$state$inv_dotZtZ)[x_cols])
-    se_cr <- sqrt(diag(result$state$Vcr_hat)[x_cols])
+    theta <- S$theta_hat[x_cols]
+    se_cl <- sqrt(diag(S$sigma2_hat * S$inv_dotZtZ)[x_cols])
+    se_cr <- sqrt(diag(S$Vcr_hat)[x_cols])
     for (xn in x_cols)
       cat(sprintf("    %-10s  %8.4f  %8.4f  %8.4f  %7.2f\n",
                   xn, theta[xn], se_cl[xn], se_cr[xn],
                   theta[xn] / se_cr[xn]))
     cat(sprintf("    %s\n", strrep("-", 52)))
-    cat("    * SE    : classical variance 기반 표준오차\n")
-    cat("    * SE(CR): HC0 cluster-robust variance 기반 표준오차 (Arellano)\n")
+    cat("    * SE    : based on classical (homoskedastic) variance\n")
+    cat("    * SE(CR): based on HC0 cluster-robust variance (Arellano 1987)\n")
     cat(sprintf("%s\n", sep_m))
   }
 
-  # 원래 time level 정보를 결과에 추가
   result$time_levels_original <- time_levels
   result$time_remap            <- time_remap
   result
