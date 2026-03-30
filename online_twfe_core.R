@@ -23,11 +23,11 @@ tryCatch({
     file.path(dirname(getwd()), "src", "alg1_batch.cpp")      # 한 단계 위
   )
   .cpp_found <- Filter(file.exists, .cpp_candidates)
-  if (length(.cpp_found) == 0L) stop("src/alg1_batch.cpp를 찾을 수 없습니다.")
+  if (length(.cpp_found) == 0L) stop("Cannot find src/alg1_batch.cpp")
   Rcpp::sourceCpp(.cpp_found[[1L]])
   .alg1_batch_rcpp_available <- TRUE
 }, error = function(e) {
-  message("[otwfe] Rcpp 배치 모듈 로드 실패 — pure-R fallback 사용\n  ", conditionMessage(e))
+  message("[otwfe] Rcpp batch module failed — using pure-R fallback\n  ", conditionMessage(e))
 })
 
 
@@ -866,7 +866,7 @@ otwfe_update <- function(handle, chunk_df) {
   }
 
   if (verbose)
-    cat(sprintf("초기 State 구성 중 (warm-up: %d units)...\n", length(warmup_ids)))
+    cat(sprintf("Initializing state (warm-up: %d units)...\n", length(warmup_ids)))
 
   df_warm         <- chunk_df[id_ch_vec %in% warmup_ids, ]
   df_stream_chunk <- chunk_df[!(id_ch_vec %in% warmup_ids), ]
@@ -902,7 +902,7 @@ otwfe_update <- function(handle, chunk_df) {
     chunk_df[[time_col]] <- handle$time_map[as.character(chunk_df[[time_col]])]
 
   if (!.alg1_batch_rcpp_available)
-    stop("Rcpp 배치 모듈이 필요합니다. sourceCpp('src/alg1_batch.cpp')를 확인하세요.")
+    stop("Rcpp batch module required. Please check sourceCpp('src/alg1_batch.cpp').")
 
   stream_idx_list <- split(seq_len(nrow(chunk_df)),
                             as.character(chunk_df[[id_col]]))
@@ -914,7 +914,7 @@ otwfe_update <- function(handle, chunk_df) {
   over_support <- t_all_new > S_pre$T_support
 
   if (any(over_support)) {
-    warning(sprintf("%d개 관측치가 T_support(%d)를 초과합니다. 해당 관측치 제외.",
+    warning(sprintf("%d observation(s) exceed T_support (%d) and will be dropped.",
                     sum(over_support), S_pre$T_support))
   }
 
@@ -977,7 +977,7 @@ otwfe_update <- function(handle, chunk_df) {
 #' @export
 otwfe_finalize <- function(handle) {
   if (is.null(handle$S))
-    stop("otwfe_update()를 먼저 호출하세요.")
+    stop("Call otwfe_update() before otwfe_finalize().")
 
   S       <- handle$S
   nm_list <- dimnames(S$inv_dotZtZ)
@@ -1061,7 +1061,7 @@ otwfe <- function(data,
     n_chunks <- ceiling(n_units / chunk_size)
 
     if (verbose)
-      cat(sprintf("청크 방식 처리: %d 청크 (chunk_size=%s units)\n",
+      cat(sprintf("Chunk processing: %d chunk(s) (chunk_size = %s units)\n",
                   n_chunks, format(chunk_size, big.mark = ",")))
 
     pb <- progress::progress_bar$new(
@@ -1085,7 +1085,7 @@ otwfe <- function(data,
     t_elapsed <- (proc.time() - t_start)[["elapsed"]]
     S <- result$state
     if (verbose)
-      cat(sprintf("\n완료: N = %s, n = %s, p = %d, T_support = %d | 소요 시간: %.2f 초\n",
+      cat(sprintf("\nDone: N = %s, n = %s, p = %d, T_support = %d | elapsed: %.2f sec\n",
                   format(S$N, big.mark = ","), format(S$n, big.mark = ","),
                   S$p, S$T_support, t_elapsed))
     return(result)
@@ -1105,7 +1105,7 @@ otwfe <- function(data,
   all_times <- sort(unique(data[[time_col]]))
 
   if (length(all_times) < 2L)
-    stop("최소 2개 이상의 calendar time이 필요합니다.")
+    stop("At least 2 distinct calendar time periods are required.")
 
   # calendar time을 1, 2, ..., T로 재인덱싱
   # seq_len(T_support) = 1..T가 실제 관측 time 수와 일치해야
@@ -1140,7 +1140,7 @@ otwfe <- function(data,
     warmup_ids <- as.character(warmup_ids)
     warmup_ids <- intersect(warmup_ids, eligible)
     if (length(warmup_ids) < 1L)
-      stop("지정한 warmup_ids 중 eligible한 unit이 없습니다.")
+      stop("None of the specified warmup_ids are eligible (require >= 2 observations).")
 
   } else {
     # 자동 선택: 모든 calendar time을 커버하는 unit들 우선 선택 후 최솟값 보장
@@ -1178,7 +1178,7 @@ otwfe <- function(data,
   }
 
   if (length(warmup_ids) < 1L)
-    stop("warm-up 가능한 unit이 없습니다. 각 unit은 최소 2개의 관측치가 필요합니다.")
+    stop("No eligible warm-up units found. Each unit requires at least 2 observations.")
 
   df_warm   <- data[id_ch_vec %in% warmup_ids, ]
   df_stream <- data[!(id_ch_vec %in% warmup_ids), ]
@@ -1187,7 +1187,7 @@ otwfe <- function(data,
   # 3. 초기 State 구성 (배치 OLS — Alg 1/2/3와 algebraically equivalent)
   # --------------------------------------------------
   if (verbose) {
-    cat(sprintf("초기 State 구성 중 (warm-up: %d units)...\n", length(warmup_ids)))
+    cat(sprintf("Initializing state (warm-up: %d units)...\n", length(warmup_ids)))
   }
 
   init  <- state_init(df_warm, id_col, time_col, y_col, x_cols, baseline_time)
@@ -1202,7 +1202,7 @@ otwfe <- function(data,
   if (nrow(df_stream) == 0L) {
     t_elapsed <- (proc.time() - t_start)[["elapsed"]]
     if (verbose)
-      cat(sprintf("추가 스트리밍 데이터 없음. 초기 상태 반환. | 소요 시간: %.2f 초\n",
+      cat(sprintf("No streaming data. Returning warm-up state. | elapsed: %.2f sec\n",
                   t_elapsed))
     return(structure(
       list(state = S_pre, units = units,
@@ -1438,7 +1438,7 @@ otwfe <- function(data,
 
   if (verbose) {
     close(pb)
-    cat(sprintf("\n완료: N = %s, n = %s, p = %d, T_support = %d | 소요 시간: %.2f 초\n",
+    cat(sprintf("\nDone: N = %s, n = %s, p = %d, T_support = %d | elapsed: %.2f sec\n",
                 format(S_pre$N, big.mark = ","),
                 format(S_pre$n, big.mark = ","),
                 S_pre$p, S_pre$T_support,
@@ -1462,123 +1462,266 @@ otwfe <- function(data,
 
 
 # =============================================================================
-# Section 6: Output — tidy / summary / print
+# Section 6: S3 Methods — coef / vcov / nobs / confint / tidy / print / summary
 # =============================================================================
 
-#' otwfe 결과에서 계수 테이블 추출
-#'
-#' @param x         \code{otwfe()} 반환 객체
-#' @param vcov      분산 종류: \code{"cluster"} (default) 또는 \code{"classical"}
-#' @param conf_level 신뢰 수준 (default 0.95)
-#' @param include_time_fe time fixed effect 계수를 테이블에 포함할지 여부
-#' @return \code{data.frame}: term, estimate, std.error, statistic, p.value,
-#'         conf.low, conf.high
-#' @export
-tidy.otwfe <- function(x,
-                             vcov            = c("cluster", "classical"),
-                             conf_level      = 0.95,
-                             include_time_fe = FALSE) {
-
-  vcov   <- match.arg(vcov)
-  S      <- x$state
-  theta  <- S$theta_hat
-  p      <- length(theta)
-
-  # 분산-공분산 행렬 선택
-  V <- if (vcov == "classical") {
-    S$sigma2_hat * S$inv_dotZtZ
+# --------------------------------------------------------------------------
+# Internal helper: build coefficient table for x_cols
+# --------------------------------------------------------------------------
+.otwfe_coef_table <- function(object, type = c("robust", "classical"),
+                               conf_level = 0.95) {
+  type  <- match.arg(type)
+  S     <- object$state
+  theta <- S$theta_hat[object$x_cols]
+  V     <- if (type == "classical") {
+    (S$sigma2_hat * S$inv_dotZtZ)[object$x_cols, object$x_cols]
   } else {
-    S$Vcr_hat
+    S$Vcr_hat[object$x_cols, object$x_cols]
   }
-  colnames(V) <- rownames(V) <- names(theta)
-
   se   <- sqrt(pmax(diag(V), 0))
+  df   <- S$n - S$N - S$p
   tval <- theta / se
-  pval <- 2 * pt(abs(tval), df = S$n - S$N - p, lower.tail = FALSE)
-
-  alpha <- 1 - conf_level
-  z     <- qt(1 - alpha / 2, df = S$n - S$N - p)
-
-  tab <- data.frame(
+  pval <- 2 * pt(abs(tval), df = df, lower.tail = FALSE)
+  q    <- qt((1 + conf_level) / 2, df = df)
+  data.frame(
     term      = names(theta),
-    estimate  = theta,
-    std.error = se,
-    statistic = tval,
-    p.value   = pval,
-    conf.low  = theta - z * se,
-    conf.high = theta + z * se,
-    stringsAsFactors = FALSE,
-    row.names = NULL
+    estimate  = unname(theta),
+    std.error = unname(se),
+    statistic = unname(tval),
+    p.value   = unname(pval),
+    conf.low  = unname(theta - q * se),
+    conf.high = unname(theta + q * se),
+    row.names = NULL,
+    stringsAsFactors = FALSE
   )
+}
 
-  # time FE 제외 옵션
-  if (!include_time_fe) {
-    is_time_fe <- grepl("^factor\\(time\\)", tab$term)
-    tab        <- tab[!is_time_fe, ]
+# Significance stars helper
+.sig_stars <- function(p) {
+  ifelse(p < 0.001, "***",
+  ifelse(p < 0.01,  "** ",
+  ifelse(p < 0.05,  "*  ",
+  ifelse(p < 0.1,   ".  ", "   "))))
+}
+
+# --------------------------------------------------------------------------
+# coef.otwfe
+# --------------------------------------------------------------------------
+#' Extract coefficients from an otwfe object
+#'
+#' @param object An \code{otwfe} object
+#' @param which  \code{"x"} (default) returns only x covariates;
+#'               \code{"all"} also includes time FE dummies
+#' @export
+coef.otwfe <- function(object, which = c("x", "all"), ...) {
+  which <- match.arg(which)
+  theta <- object$state$theta_hat
+  if (which == "x") theta[object$x_cols] else theta
+}
+
+# --------------------------------------------------------------------------
+# vcov.otwfe
+# --------------------------------------------------------------------------
+#' Extract variance-covariance matrix from an otwfe object
+#'
+#' @param object An \code{otwfe} object
+#' @param type   \code{"robust"} (default) for cluster-robust (HC0, Arellano);
+#'               \code{"classical"} for homoskedastic
+#' @export
+vcov.otwfe <- function(object, type = c("robust", "classical"), ...) {
+  type <- match.arg(type)
+  S    <- object$state
+  V    <- if (type == "classical") S$sigma2_hat * S$inv_dotZtZ else S$Vcr_hat
+  V[object$x_cols, object$x_cols]
+}
+
+# --------------------------------------------------------------------------
+# nobs.otwfe
+# --------------------------------------------------------------------------
+#' Number of observations in an otwfe object
+#' @export
+nobs.otwfe <- function(object, ...) object$state$n
+
+# --------------------------------------------------------------------------
+# confint.otwfe
+# --------------------------------------------------------------------------
+#' Confidence intervals for otwfe coefficients
+#'
+#' @param object     An \code{otwfe} object
+#' @param parm       Parameter names to include (default: all x covariates)
+#' @param level      Confidence level (default 0.95)
+#' @param type       \code{"robust"} (default) or \code{"classical"}
+#' @export
+confint.otwfe <- function(object, parm, level = 0.95,
+                           type = c("robust", "classical"), ...) {
+  type  <- match.arg(type)
+  tab   <- .otwfe_coef_table(object, type = type, conf_level = level)
+  ci    <- as.matrix(tab[, c("conf.low", "conf.high")])
+  rownames(ci) <- tab$term
+  alpha        <- 1 - level
+  colnames(ci) <- c(sprintf("%.1f %%", 100 * alpha / 2),
+                    sprintf("%.1f %%", 100 * (1 - alpha / 2)))
+  if (!missing(parm)) ci[parm, , drop = FALSE] else ci
+}
+
+# --------------------------------------------------------------------------
+# tidy.otwfe  (broom-compatible)
+# --------------------------------------------------------------------------
+#' Tidy method for otwfe objects
+#'
+#' @param x              An \code{otwfe} object
+#' @param vcov           \code{"robust"} (default) or \code{"classical"}
+#' @param conf_level     Confidence level (default 0.95)
+#' @param include_time_fe Include time FE dummies in output (default FALSE)
+#' @export
+tidy.otwfe <- function(x, vcov = c("robust", "classical"),
+                        conf_level = 0.95, include_time_fe = FALSE, ...) {
+  vcov <- match.arg(vcov)
+  tab  <- .otwfe_coef_table(x, type = vcov, conf_level = conf_level)
+
+  if (include_time_fe) {
+    S     <- x$state
+    theta <- S$theta_hat
+    fe_nm <- setdiff(names(theta), x$x_cols)
+    if (length(fe_nm) > 0L) {
+      V  <- if (vcov == "classical") S$sigma2_hat * S$inv_dotZtZ else S$Vcr_hat
+      df <- S$n - S$N - S$p
+      q  <- qt((1 + conf_level) / 2, df = df)
+      se_fe <- sqrt(pmax(diag(V)[fe_nm], 0))
+      tv_fe <- theta[fe_nm] / se_fe
+      pv_fe <- 2 * pt(abs(tv_fe), df = df, lower.tail = FALSE)
+      fe_tab <- data.frame(
+        term      = fe_nm,
+        estimate  = unname(theta[fe_nm]),
+        std.error = unname(se_fe),
+        statistic = unname(tv_fe),
+        p.value   = unname(pv_fe),
+        conf.low  = unname(theta[fe_nm] - q * se_fe),
+        conf.high = unname(theta[fe_nm] + q * se_fe),
+        row.names = NULL, stringsAsFactors = FALSE
+      )
+      tab <- rbind(tab, fe_tab)
+    }
   }
-
   tab
 }
 
+# --------------------------------------------------------------------------
+# print.otwfe
+# --------------------------------------------------------------------------
+#' Print method for otwfe objects
 #' @export
-print.otwfe <- function(x, ...) {
-  S <- x$state
-  cat("Online TWFE Estimator\n")
-  cat(sprintf("  Units (N): %s\n",       format(S$N,         big.mark = ",")))
-  cat(sprintf("  Observations (n): %s\n", format(S$n,         big.mark = ",")))
-  cat(sprintf("  Covariates (k): %d\n",   length(x$x_cols)))
-  cat(sprintf("  T_support: %d\n",        S$T_support))
-  cat(sprintf("  Parameters (p): %d\n",   S$p))
+print.otwfe <- function(x, digits = 4, ...) {
+  S   <- x$state
+  tab <- .otwfe_coef_table(x, type = "robust")
+
+  cat("Online TWFE Estimator  (Hwang & Lee, 2026)\n")
+  cat(sprintf("  N = %-12s  n = %-12s  T = %d  k = %d  p = %d\n",
+              format(S$N, big.mark = ","),
+              format(S$n, big.mark = ","),
+              S$T_support, length(x$x_cols), S$p))
   cat("\nCoefficients (cluster-robust SE):\n")
-  tab <- tidy.otwfe(x, vcov = "cluster", include_time_fe = FALSE)
-  coef_tab <- data.frame(
-    Estimate  = round(tab$estimate,  6),
-    `Std.Err` = round(tab$std.error, 6),
-    `t value` = round(tab$statistic, 4),
+
+  fmt <- paste0("%.", digits, "f")
+  coef_df <- data.frame(
+    Estimate   = sprintf(fmt, tab$estimate),
+    `Std. Err` = sprintf(fmt, tab$std.error),
+    `t value`  = sprintf("%.2f",  tab$statistic),
     `Pr(>|t|)` = format.pval(tab$p.value, digits = 3),
-    check.names = FALSE
+    ` `        = .sig_stars(tab$p.value),
+    check.names = FALSE, stringsAsFactors = FALSE
   )
-  rownames(coef_tab) <- tab$term
-  print(coef_tab)
+  rownames(coef_df) <- tab$term
+  print(coef_df)
+
+  cat("---\nSignif. codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1\n")
+  cat(sprintf("\nResidual sigma^2: %.4f   df: %s\n",
+              S$sigma2_hat, format(S$n - S$N - S$p, big.mark = ",")))
   invisible(x)
 }
 
+# --------------------------------------------------------------------------
+# summary.otwfe  — returns a summary.otwfe object
+# --------------------------------------------------------------------------
+#' Summary method for otwfe objects
+#'
+#' @param object     An \code{otwfe} object
+#' @param vcov_type  \code{"robust"} (default) or \code{"classical"}
+#' @param conf_level Confidence level for intervals (default 0.95)
 #' @export
-summary.otwfe <- function(object, vcov = c("cluster", "classical"), ...) {
-  vcov <- match.arg(vcov)
-  S    <- object$state
+summary.otwfe <- function(object, vcov_type = c("robust", "classical"),
+                           conf_level = 0.95, ...) {
+  vcov_type <- match.arg(vcov_type)
+  tab       <- .otwfe_coef_table(object, type = vcov_type, conf_level = conf_level)
+  structure(
+    list(
+      vcov_type    = vcov_type,
+      conf_level   = conf_level,
+      coefficients = tab,
+      state        = object$state,
+      x_cols       = object$x_cols,
+      y_col        = object$y_col,
+      id_col       = object$id_col,
+      time_col     = object$time_col,
+      time_levels  = object$time_levels
+    ),
+    class = "summary.otwfe"
+  )
+}
 
-  cat("==============================================\n")
-  cat("Online TWFE (Hwang & Lee, 2026)\n")
-  cat("==============================================\n")
-  cat(sprintf("Dependent variable : %s\n", object$y_col))
-  cat(sprintf("Covariates         : %s\n", paste(object$x_cols, collapse = ", ")))
-  cat(sprintf("ID column          : %s\n", object$id_col))
-  cat(sprintf("Time column        : %s\n", object$time_col))
-  cat(sprintf("Baseline time      : %s\n", S$baseline_time))
-  cat(sprintf("T_support          : %d\n", S$T_support))
-  cat(sprintf("N (units)          : %s\n", format(S$N, big.mark = ",")))
-  cat(sprintf("n (observations)   : %s\n", format(S$n, big.mark = ",")))
-  cat(sprintf("Parameters (p)     : %d\n", S$p))
-  cat(sprintf("Residual df        : %d\n", S$n - S$N - S$p))
+# --------------------------------------------------------------------------
+# print.summary.otwfe
+# --------------------------------------------------------------------------
+#' @export
+print.summary.otwfe <- function(x, digits = 4, ...) {
+  S   <- x$state
+  tab <- x$coefficients
+  df  <- S$n - S$N - S$p
+
+  sep56 <- strrep("=", 56)
+  cat(sep56, "\n")
+  cat("Online TWFE Estimator  (Hwang & Lee, 2026)\n")
+  cat(sep56, "\n")
+  cat(sprintf("Dependent variable : %s\n", x$y_col))
+  cat(sprintf("Covariates         : %s\n", paste(x$x_cols, collapse = ", ")))
+  cat(sprintf("ID column          : %s\n", x$id_col))
+  cat(sprintf("Time column        : %s\n", x$time_col))
+  if (!is.null(x$time_levels) && length(x$time_levels) > 1L)
+    cat(sprintf("Time periods       : %s - %s  (T = %d)\n",
+                x$time_levels[1L], x$time_levels[length(x$time_levels)],
+                S$T_support))
+  cat(sprintf("N (units)          : %s\n",  format(S$N, big.mark = ",")))
+  cat(sprintf("n (observations)   : %s\n",  format(S$n, big.mark = ",")))
+  cat(sprintf("Parameters (p)     : %d\n",  S$p))
+  cat(sprintf("Residual df        : %s\n",  format(df, big.mark = ",")))
   cat(sprintf("sigma^2            : %.6f\n", S$sigma2_hat))
   cat(sprintf("Variance type      : %s\n",
-              if (vcov == "cluster") "Cluster-robust (HC0, Arellano)"
-              else                   "Classical (homoskedastic)"))
-  cat("----------------------------------------------\n")
+              if (x$vcov_type == "robust")
+                "Cluster-robust (HC0, Arellano)"
+              else "Classical (homoskedastic)"))
+  cat(strrep("-", 56), "\n")
 
-  tab <- tidy.otwfe(object, vcov = vcov, include_time_fe = FALSE)
-  coef_tab <- data.frame(
-    Estimate  = round(tab$estimate,  6),
-    `Std.Err` = round(tab$std.error, 6),
-    `t value` = round(tab$statistic, 4),
+  # CI column labels
+  alpha <- 1 - x$conf_level
+  ci_lo <- sprintf("%.1f %%", 100 * alpha / 2)
+  ci_hi <- sprintf("%.1f %%", 100 * (1 - alpha / 2))
+
+  fmt <- paste0("%.", digits, "f")
+  coef_df <- data.frame(
+    Estimate   = sprintf(fmt, tab$estimate),
+    `Std. Err` = sprintf(fmt, tab$std.error),
+    `t value`  = sprintf("%.2f", tab$statistic),
     `Pr(>|t|)` = format.pval(tab$p.value, digits = 3),
-    `2.5%`    = round(tab$conf.low,  6),
-    `97.5%`   = round(tab$conf.high, 6),
-    check.names = FALSE
+    ` `        = .sig_stars(tab$p.value),
+    check.names = FALSE, stringsAsFactors = FALSE
   )
-  rownames(coef_tab) <- tab$term
-  print(coef_tab)
-  cat("==============================================\n")
-  invisible(object)
+  coef_df[[ci_lo]] <- sprintf(fmt, tab$conf.low)
+  coef_df[[ci_hi]] <- sprintf(fmt, tab$conf.high)
+  rownames(coef_df) <- tab$term
+  print(coef_df)
+
+  cat("---\n")
+  cat("Signif. codes: 0 '***' 0.001 '**' 0.01 '*' 0.05 '.' 0.1 ' ' 1\n")
+  cat(sep56, "\n")
+  invisible(x)
 }
