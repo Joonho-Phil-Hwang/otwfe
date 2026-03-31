@@ -31,5 +31,10 @@ R/RcppExports.R
 
 # Research documents (not part of package)
 online_algorithms.pdf
+online_algorithms_rev.pdf
 Application/
 CLAUDE.md
+
+# Simulation output files
+Simulation/*.txt
+Simulation/benchmark_sim_large.R

@@ -26,30 +26,27 @@
 }
 
 # --------------------------------------------------------------------------
-# .csv_read_chunk(): read n_rows rows from path starting after row_offset
+# .csv_read_chunk_seq(): read next n_rows rows from an open sequential connection
 #
-# row_offset: number of data rows already read (excluding header)
-# n_rows    : number of rows to read
-# returns   : data.frame or NULL (EOF)
+# con        : open text connection (file position maintained across calls)
+# header_line: header row string (prepended so fread can infer column names)
+# sep        : CSV delimiter
+# n_rows     : maximum rows to read
+# returns    : data.frame or NULL (EOF)
+#
+# Sequential reading avoids the O(skip) re-scan overhead of fread(skip=N),
+# making total I/O O(n) instead of O(n^2 / chunk_size).
 # --------------------------------------------------------------------------
-.csv_read_chunk <- function(path, col_names, sep, row_offset, n_rows) {
-  tryCatch({
-    if (row_offset == 0L) {
-      chunk <- data.table::fread(path, sep = sep, nrows = n_rows,
-                                  showProgress = FALSE)
-    } else {
-      chunk <- data.table::fread(
-        path, sep = sep,
-        skip      = row_offset + 1L,   # +1 for header row
-        nrows     = n_rows,
-        header    = FALSE,
-        col.names = col_names,
-        showProgress = FALSE
-      )
-    }
-    if (nrow(chunk) == 0L) return(NULL)
-    as.data.frame(chunk)
-  }, error = function(e) NULL)
+.csv_read_chunk_seq <- function(con, header_line, sep, n_rows) {
+  lines <- readLines(con, n = n_rows)
+  if (length(lines) == 0L) return(NULL)
+  chunk <- data.table::fread(
+    input        = paste(c(header_line, lines), collapse = "\n"),
+    sep          = sep,
+    showProgress = FALSE
+  )
+  if (nrow(chunk) == 0L) return(NULL)
+  as.data.frame(chunk)
 }
 
 # --------------------------------------------------------------------------
@@ -197,15 +194,24 @@ otwfe_file <- function(path,
   # Step 2: Build initialization chunk
   #   Accumulate chunks until all T calendar times are covered,
   #   ensuring warm-up can always span the full T_support.
+  #
+  #   Open a single sequential file connection here and reuse it through
+  #   Step 4 — eliminates the O(skip) re-scan overhead of fread(skip=N).
   # -----------------------------------------------------------------------
   if (verbose) cat("\n[Step 2] Building initialization chunk (covering all T periods)\n")
   t2        <- proc.time()
-  rows_read <- 0L
-  init_df   <- NULL
+
+  # Open once; on.exit ensures the connection is closed even on error
+  con         <- file(path, open = "rt")
+  on.exit(close(con), add = TRUE)
+  header_line <- readLines(con, n = 1L)   # consume header row
+
+  init_df       <- NULL
   n_init_chunks <- 0L
+  rows_read     <- 0L   # used only for verbose progress messages below
 
   repeat {
-    raw <- .csv_read_chunk(path, col_names, sep, rows_read, chunk_size)
+    raw <- .csv_read_chunk_seq(con, header_line, sep, chunk_size)
     if (is.null(raw) || nrow(raw) == 0L) break
 
     rows_read     <- rows_read + nrow(raw)
@@ -276,7 +282,7 @@ otwfe_file <- function(path,
   chunk_idx <- n_init_chunks
 
   repeat {
-    raw <- .csv_read_chunk(path, col_names, sep, rows_read, chunk_size)
+    raw <- .csv_read_chunk_seq(con, header_line, sep, chunk_size)
     if (is.null(raw) || nrow(raw) == 0L) break
 
     rows_read <- rows_read + nrow(raw)

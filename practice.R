@@ -37,7 +37,7 @@ cat("Setup complete. Rcpp batch:", .alg1_batch_rcpp_available, "\n")
 # =============================================================================
 # Generate a small synthetic panel: N=1000 units, T_max=5, k=2 covariates
 set.seed(42)
-gen <- generate_panel_52(N = 1000L, T = 5L, T_min = 2L, seed = 42L, verbose = FALSE)
+gen <- generate_panel_52(N = 1000000L, T = 5L, T_min = 2L, seed = 42L, verbose = FALSE)
 df  <- gen$df
 
 cat("\n--- Dataset summary ---\n")
