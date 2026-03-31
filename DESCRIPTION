@@ -2,8 +2,12 @@ Package: otwfe
 Type: Package
 Title: Online Updating for Two-Way Fixed Effects Panel Regression
 Version: 0.1.0
-Authors@R: person("Joonho", "Hwang", role = c("aut", "cre"),
-                  email = "joonhohwang@example.com")
+Authors@R: c(
+    person("Joonho", "Hwang", role = c("aut", "cre"),
+           email = "philhwang15@gmail.com"),
+    person("Seojeong", "Lee", role = "aut",
+           email = "s.jay.lee@snu.ac.kr")
+  )
 Description: Algebraically exact online updating of two-way fixed effects (TWFE)
     panel regression estimators. Supports sequential updating of coefficients,
     classical variance, and cluster-robust variance (HC0, Arellano 1987) without
