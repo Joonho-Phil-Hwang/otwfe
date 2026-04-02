@@ -4,12 +4,14 @@
 .Rproj.user/
 *.Rproj
 
-# Rcpp auto-generated files
+# Rcpp 컴파일 결과물 (플랫폼별 바이너리 — 설치 시 재컴파일됨)
 src/*.o
 src/*.so
 src/*.dll
-src/RcppExports.cpp
-R/RcppExports.R
+
+# RcppExports는 패키지 설치에 필요하므로 추적 유지
+# src/RcppExports.cpp
+# R/RcppExports.R
 
 # macOS
 .DS_Store
