@@ -16,20 +16,20 @@
 # =============================================================================
 # 0. Setup
 # =============================================================================
-# 패키지 설치 및 로드
-#   - 처음 실행하거나 구버전(otwfe 함수 없음)이 설치된 경우: GitHub에서 재설치
-#   - 최신 버전이 이미 설치된 경우: 바로 로드
+# Install and load the package
+#   - First run or outdated version (missing otwfe() or Rcpp functions): install from GitHub
+#   - Up-to-date version already installed: load directly
 if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
 needs_install <- !requireNamespace("otwfe", quietly = TRUE) ||
                  !"otwfe" %in% getNamespaceExports("otwfe") ||
                  !exists("alg1_batch_cpp", where = asNamespace("otwfe"), inherits = FALSE)
 if (needs_install) {
-  # upgrade = "never": 의존 패키지 업데이트 여부 묻는 대화형 프롬프트 비활성화
+  # upgrade = "never": suppress interactive prompt asking whether to update dependencies
   remotes::install_github("Joonho-Phil-Hwang/otwfe", upgrade = "never")
 }
 suppressPackageStartupMessages(library(otwfe))
 
-# DGP 함수 로드: 로컬 파일 우선, 없으면 GitHub에서 직접 소싱
+# Load DGP helper: use local file if available, otherwise source from GitHub
 if (file.exists("Simulation/sim_dgp.R")) {
   source("Simulation/sim_dgp.R")
 } else {
