@@ -17,12 +17,12 @@
 # 0. Setup
 # =============================================================================
 # 패키지 설치 및 로드
-#   - 처음 실행하는 경우: GitHub에서 자동 설치 (remotes 패키지 필요)
-#   - 이미 설치된 경우: 바로 로드
-if (!requireNamespace("otwfe", quietly = TRUE)) {
-  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
-  remotes::install_github("Joonho-Phil-Hwang/otwfe")
-}
+#   - 처음 실행하거나 구버전(otwfe 함수 없음)이 설치된 경우: GitHub에서 재설치
+#   - 최신 버전이 이미 설치된 경우: 바로 로드
+if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+needs_install <- !requireNamespace("otwfe", quietly = TRUE) ||
+                 !"otwfe" %in% getNamespaceExports("otwfe")
+if (needs_install) remotes::install_github("Joonho-Phil-Hwang/otwfe")
 suppressPackageStartupMessages(library(otwfe))
 
 # DGP 함수 로드: 로컬 파일 우선, 없으면 GitHub에서 직접 소싱
