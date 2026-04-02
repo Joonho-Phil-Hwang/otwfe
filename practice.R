@@ -23,18 +23,8 @@ if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
 needs_install <- !requireNamespace("otwfe", quietly = TRUE) ||
                  !"otwfe" %in% getNamespaceExports("otwfe")
 if (needs_install) {
-  # 공개 레포 — credential store 충돌 방지를 위해 GITHUB_PAT를 비우고 설치
-  old_pat <- Sys.getenv("GITHUB_PAT")
-  Sys.setenv(GITHUB_PAT = "")
-  tryCatch(
-    remotes::install_github("Joonho-Phil-Hwang/otwfe"),
-    error = function(e) stop(
-      "패키지 설치 실패. R 콘솔에서 아래 명령을 직접 실행해보세요:\n",
-      "  remotes::install_github('Joonho-Phil-Hwang/otwfe')\n",
-      "원래 에러: ", conditionMessage(e)
-    )
-  )
-  if (nzchar(old_pat)) Sys.setenv(GITHUB_PAT = old_pat) else Sys.unsetenv("GITHUB_PAT")
+  # upgrade = "never": 의존 패키지 업데이트 여부 묻는 대화형 프롬프트 비활성화
+  remotes::install_github("Joonho-Phil-Hwang/otwfe", upgrade = "never")
 }
 suppressPackageStartupMessages(library(otwfe))
 
