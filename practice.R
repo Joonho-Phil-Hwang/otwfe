@@ -21,7 +21,8 @@
 #   - 최신 버전이 이미 설치된 경우: 바로 로드
 if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
 needs_install <- !requireNamespace("otwfe", quietly = TRUE) ||
-                 !"otwfe" %in% getNamespaceExports("otwfe")
+                 !"otwfe" %in% getNamespaceExports("otwfe") ||
+                 !exists("alg1_batch_cpp", where = asNamespace("otwfe"), inherits = FALSE)
 if (needs_install) {
   # upgrade = "never": 의존 패키지 업데이트 여부 묻는 대화형 프롬프트 비활성화
   remotes::install_github("Joonho-Phil-Hwang/otwfe", upgrade = "never")
