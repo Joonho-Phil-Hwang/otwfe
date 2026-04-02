@@ -16,20 +16,28 @@
 # =============================================================================
 # 0. Setup
 # =============================================================================
-# Set working directory to the package root before running
-# setwd("/Users/joonhohwang/Desktop/claude_code")
+# 패키지 설치 및 로드
+#   - 처음 실행하는 경우: GitHub에서 자동 설치 (remotes 패키지 필요)
+#   - 이미 설치된 경우: 바로 로드
+if (!requireNamespace("otwfe", quietly = TRUE)) {
+  if (!requireNamespace("remotes", quietly = TRUE)) install.packages("remotes")
+  remotes::install_github("Joonho-Phil-Hwang/otwfe")
+}
+suppressPackageStartupMessages(library(otwfe))
 
-suppressPackageStartupMessages(library(devtools))
-load_all(".")                          # loads otwfe package (all R/ files + Rcpp)
-
-source("Simulation/sim_dgp.R")        # generate_panel_52() data generator
+# DGP 함수 로드: 로컬 파일 우선, 없으면 GitHub에서 직접 소싱
+if (file.exists("Simulation/sim_dgp.R")) {
+  source("Simulation/sim_dgp.R")
+} else {
+  source("https://raw.githubusercontent.com/Joonho-Phil-Hwang/otwfe/main/Simulation/sim_dgp.R")
+}
 
 suppressPackageStartupMessages({
   library(plm)         # offline benchmark
   library(data.table)  # fast CSV I/O
 })
 
-cat("Setup complete. Rcpp batch:", .alg1_batch_rcpp_available, "\n")
+cat("Setup complete.\n")
 
 
 # =============================================================================
