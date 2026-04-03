@@ -1,6 +1,6 @@
 library(otwfe)
 
-# DGP는 Simulation/sim_dgp.R 에서 로드
+# Load DGP from Simulation/sim_dgp.R
 source(system.file("../Simulation/sim_dgp.R", package = "otwfe",
                    mustWork = FALSE) |>
        (\(p) if (nchar(p) > 0) p else "../../Simulation/sim_dgp.R")())

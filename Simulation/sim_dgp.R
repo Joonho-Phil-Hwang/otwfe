@@ -1,37 +1,37 @@
 # =============================================================================
 # sim_dgp.R
 #
-# 논문: "Online Updating for Linear Panel Regressions" (Hwang & Lee, 2026)
+# Paper: "Online Updating for Linear Panel Regressions" (Hwang & Lee, 2026)
 # DGP: Subsection 5.2 Simulation
 #
-# 모형: Y_it = X_it' β + α_i + λ_t + u_it
+# Model: Y_it = X_it' β + α_i + λ_t + u_it
 #   β = (1.3, -0.7)'
 #   α_i  ~ N(0, σ_α²),  σ_α = 1
 #   λ_t  ~ N(0, σ_λ²),  σ_λ = 1
 #   u_it ~ N(0, σ_u²),  σ_u = 1
 #   X_it ~ N(0, I_2),   k = 2
 #   T_i  ~ Uniform{T_min, ..., T},  T = 5, T_min = 2
-#   S_i  ⊆ {1,...,T}: 크기 T_i의 비복원 랜덤 부분집합
-# 기술적 조건: 모든 t ∈ {1,...,T}가 전체 표본에 최소 1회 등장
+#   S_i  ⊆ {1,...,T}: random subset of size T_i drawn without replacement
+# Technical condition: every t ∈ {1,...,T} appears at least once in the sample
 # =============================================================================
 
-#' 패널 데이터 생성 — Section 5.2 DGP
+#' Generate panel data — Section 5.2 DGP
 #'
-#' @param N       unit 수
-#' @param T       calendar time 지지(support) 크기  (default 5)
-#' @param T_min   unit당 최소 관측 time 수          (default 2)
-#' @param sigma_a 개인 고정효과 표준편차             (default 1)
-#' @param sigma_l 시간 고정효과 표준편차             (default 1)
-#' @param sigma_u 오차항 표준편차                   (default 1)
-#' @param seed    랜덤 시드
-#' @param verbose 진행 상황 출력 여부
+#' @param N       number of units
+#' @param T       size of the calendar time support  (default 5)
+#' @param T_min   minimum number of observed time periods per unit  (default 2)
+#' @param sigma_a standard deviation of individual fixed effects  (default 1)
+#' @param sigma_l standard deviation of time fixed effects  (default 1)
+#' @param sigma_u standard deviation of the error term  (default 1)
+#' @param seed    random seed
+#' @param verbose print progress messages
 #' @return list:
 #'   \item{df}        data.frame (id, time, y, x1, x2)
-#'   \item{t_gen}     데이터 생성 소요 시간 (초)
-#'   \item{N_obs}     총 관측치 수
-#'   \item{T_i_vec}   unit별 관측 time 수 벡터 (길이 N)
-#'   \item{beta_true} 참 계수 벡터 c(1.3, -0.7)
-#'   \item{lambda_t}  시간 고정효과 실현값 (길이 T)
+#'   \item{t_gen}     data generation time in seconds
+#'   \item{N_obs}     total number of observations
+#'   \item{T_i_vec}   number of observed time periods per unit (length N)
+#'   \item{beta_true} true coefficient vector c(1.3, -0.7)
+#'   \item{lambda_t}  realized time fixed effects (length T)
 generate_panel_52 <- function(N,
                                T       = 5L,
                                T_min   = 2L,
@@ -42,49 +42,49 @@ generate_panel_52 <- function(N,
                                verbose = TRUE) {
 
   if (verbose)
-    cat(sprintf("  DGP 생성: N = %s,  T = %d ...",
+    cat(sprintf("  Generating DGP: N = %s,  T = %d ...",
                 format(N, big.mark = ","), T))
   t0 <- proc.time()
 
   set.seed(seed)
 
-  beta     <- c(1.3, -0.7)                              # 참 계수
+  beta     <- c(1.3, -0.7)                              # true coefficients
   alpha_i  <- rnorm(N,   sd = sigma_a)                  # α_i ~ N(0, σ_α²)
   lambda_t <- rnorm(T,   sd = sigma_l)                  # λ_t ~ N(0, σ_λ²)
   T_i_vec  <- sample(T_min:T, N, replace = TRUE)        # T_i ~ Uniform{T_min,...,T}
   total_obs <- sum(T_i_vec)
 
   # ------------------------------------------------------------------
-  # id_vec 벡터화 (O(n))
+  # Vectorize id_vec  O(n)
   # ------------------------------------------------------------------
   id_vec <- rep(seq_len(N), T_i_vec)
 
   # ------------------------------------------------------------------
-  # time_vec: 각 unit i에서 {1,...,T}의 크기 T_i 비복원 부분집합 S_i
-  # sample.int(T, Ti) 호출이 N번 필요 → loop 불가피, 사전 할당으로 최적화
+  # time_vec: for each unit i, draw S_i ⊆ {1,...,T} of size T_i without replacement
+  # Requires N calls to sample.int(T, Ti) → loop unavoidable; pre-allocate for speed
   # ------------------------------------------------------------------
   time_vec <- integer(total_obs)
   pos <- 1L
   for (i in seq_len(N)) {
     Ti  <- T_i_vec[i]
     end <- pos + Ti - 1L
-    time_vec[pos:end] <- sample.int(T, Ti)   # 비복원 추출
+    time_vec[pos:end] <- sample.int(T, Ti)   # without replacement
     pos <- end + 1L
   }
 
   # ------------------------------------------------------------------
-  # 기술적 조건: 모든 t ∈ {1,...,T}가 최소 1회 등장하도록 보장
-  # (N이 크면 사실상 자동 만족되지만 명시적으로 확인·수정)
+  # Technical condition: ensure every t ∈ {1,...,T} appears at least once
+  # (satisfied automatically for large N, but checked and fixed explicitly)
   # ------------------------------------------------------------------
   missing_t <- setdiff(seq_len(T), unique(time_vec))
   if (length(missing_t) > 0L) {
     warning(sprintf(
-      "누락된 calendar time (%s) 강제 커버 — 매우 소규모 N에서만 발생",
+      "Forcing coverage of missing calendar time(s) (%s) — occurs only for very small N",
       paste(missing_t, collapse = ",")))
     cum_end <- cumsum(T_i_vec)
     cum_beg <- c(1L, cum_end[-N] + 1L)
     for (t_miss in missing_t) {
-      # T_i >= 2인 unit 중 처음으로 나오는 unit의 첫 관측치를 t_miss로 교체
+      # Replace the first observation of the first unit with T_i >= 2
       for (ii in seq_len(N)) {
         if (T_i_vec[ii] >= 2L) {
           time_vec[cum_beg[ii]] <- t_miss
@@ -95,14 +95,14 @@ generate_panel_52 <- function(N,
   }
 
   # ------------------------------------------------------------------
-  # X, u 벡터화 (fast)
+  # Vectorize X and u  (fast)
   # ------------------------------------------------------------------
   x1_vec <- rnorm(total_obs)
   x2_vec <- rnorm(total_obs)
   u_vec  <- rnorm(total_obs, sd = sigma_u)
 
   # ------------------------------------------------------------------
-  # y 벡터화: Y_it = α_i + λ_t + 1.3 x1 - 0.7 x2 + u
+  # Vectorize y: Y_it = α_i + λ_t + 1.3 x1 - 0.7 x2 + u
   # ------------------------------------------------------------------
   y_vec <- rep(alpha_i, T_i_vec) +
            lambda_t[time_vec]    +
@@ -113,7 +113,7 @@ generate_panel_52 <- function(N,
   t_gen <- (proc.time() - t0)[["elapsed"]]
 
   if (verbose)
-    cat(sprintf("  완료 %.1f초  (관측치 %s,  %.0f MB)\n",
+    cat(sprintf("  Done %.1f sec  (%s obs,  %.0f MB)\n",
                 t_gen,
                 format(total_obs, big.mark = ","),
                 object.size(data.frame(
