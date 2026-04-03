@@ -37,6 +37,9 @@ online_algorithms_rev.pdf
 Application/
 CLAUDE.md
 
+# Verification scripts (developer-only)
+Verification/
+
 # Simulation output files
 Simulation/*.txt
 Simulation/benchmark_sim_large.R
