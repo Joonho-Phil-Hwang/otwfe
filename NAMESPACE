@@ -9,6 +9,7 @@ export(otwfe_update)
 export(otwfe_finalize)
 
 S3method(coef, otwfe)
+S3method(tidy, otwfe)
 S3method(vcov, otwfe)
 S3method(nobs, otwfe)
 S3method(confint, otwfe)

@@ -21,7 +21,8 @@ Depends:
     R (>= 4.0.0)
 Imports:
     Rcpp (>= 1.0.0),
-    data.table (>= 1.14.0)
+    data.table (>= 1.14.0),
+    progress (>= 1.2.0)
 Suggests:
     plm,
     broom,
