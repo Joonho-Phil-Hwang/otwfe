@@ -62,7 +62,7 @@ All S3 methods (`coef`, `vcov`, `nobs`, `confint`, `print`, `summary`) work iden
 
 ## How It Works
 
-Standard TWFE eliminates individual fixed effects via within transformation and includes time dummies as regressors. When new data arrives, a full re-estimation requires rebuilding the entire design matrix — infeasible when historical data cannot be revisited.
+With unbalanced panel data, standard TWFE eliminates individual fixed effects via within transformation and includes time dummies as regressors. When new data arrives, a full re-estimation requires rebuilding the entire design matrix — infeasible when historical data cannot be revisited.
 
 This package derives closed-form update formulas for three scenarios:
 
