@@ -138,13 +138,19 @@
 #'
 #' Two-Way Fixed Effects regression on a large CSV panel file
 #'
-#' @param path       Path to CSV file (must be sorted by id_col)
+#' @param path       Path to CSV file
 #' @param id_col     Name of the unit identifier column
 #' @param time_col   Name of the calendar time column
 #' @param y_col      Name of the dependent variable column
 #' @param x_cols     Character vector of covariate column names
 #' @param chunk_size Maximum number of rows per chunk (default 1,000,000)
 #' @param sep        CSV delimiter (default ",")
+#' @param auto_sort  If TRUE, sort the file by id_col before processing.
+#'                   Required when the file is not already sorted by id_col
+#'                   (e.g., year-sorted panel data). The sorted copy is written
+#'                   to a temporary file and cleaned up automatically.
+#'                   Requires loading the full file into memory; use FALSE for
+#'                   files that are already sorted or too large to fit in RAM.
 #' @param verbose    Print progress messages
 #' @return An object of class "otwfe"
 #'
@@ -155,6 +161,7 @@ otwfe_file <- function(path,
                        x_cols,
                        chunk_size = 1e6L,
                        sep        = ",",
+                       auto_sort  = FALSE,
                        verbose    = TRUE) {
 
   chunk_size <- as.integer(chunk_size)
@@ -172,6 +179,25 @@ otwfe_file <- function(path,
   for (col in c(id_col, time_col, y_col, x_cols))
     if (!col %in% col_names)
       stop(sprintf("Column not found in file: '%s'", col))
+
+  # -----------------------------------------------------------------------
+  # auto_sort: read full file, sort by id_col, write to temp CSV, update path
+  # -----------------------------------------------------------------------
+  tmp_sorted <- NULL
+  if (auto_sort) {
+    if (verbose) cat("  [auto_sort] Sorting file by", id_col, "...\n")
+    t_sort <- proc.time()
+    dt     <- data.table::fread(path, sep = sep, showProgress = FALSE)
+    data.table::setkeyv(dt, id_col)
+    tmp_sorted <- tempfile(fileext = ".csv")
+    data.table::fwrite(dt, tmp_sorted)
+    rm(dt); invisible(gc())
+    path <- tmp_sorted
+    on.exit(unlink(tmp_sorted), add = TRUE)
+    if (verbose)
+      cat(sprintf("  [auto_sort] Done in %.1f sec\n",
+                  (proc.time() - t_sort)[["elapsed"]]))
+  }
 
   if (verbose) {
     cat(sprintf("\n%s\n", sep72))
