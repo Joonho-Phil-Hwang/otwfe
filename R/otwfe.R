@@ -167,37 +167,50 @@ otwfe_update <- function(handle, chunk_df) {
   if (is.na(baseline_time) || baseline_time < 1L || baseline_time > T_support)
     baseline_time <- 1L
 
-  # Eligible units (at least 2 observations)
-  unit_counts <- tapply(chunk_df[[id_col]], chunk_df[[id_col]], length)
-  eligible    <- names(unit_counts)[unit_counts >= 2L]
-  if (length(eligible) == 0L)
-    stop("No eligible units (>= 2 observations) in first chunk.")
-
-  # Greedy warm-up selection (ensures all calendar times are covered)
+  # Fast unit boundary detection via rle (O(n), no tapply over all groups)
   all_times_idx <- seq_len(T_support)
   p_guess  <- length(x_cols) + max(0L, T_support - 1L)
-  min_warm <- min(max(3L * p_guess, 30L), length(eligible))
 
-  id_ch_vec  <- as.character(chunk_df[[id_col]])
-  unit_times <- tapply(as.integer(chunk_df[[time_col]]), id_ch_vec,
-                       function(x) unique(x), simplify = FALSE)
-  elig_times <- unit_times[eligible]
-  cover_cnt  <- sapply(elig_times, function(ts) sum(all_times_idx %in% ts))
-  elig_ord   <- names(sort(cover_cnt, decreasing = TRUE))
+  id_ch_vec <- as.character(chunk_df[[id_col]])
+  if (is.unsorted(id_ch_vec)) {
+    ord       <- order(id_ch_vec)
+    chunk_df  <- chunk_df[ord, , drop = FALSE]
+    id_ch_vec <- id_ch_vec[ord]
+  }
+  rle_res  <- rle(id_ch_vec)
+  u_vals   <- rle_res$values
+  u_lens   <- rle_res$lengths
+  cum_ends <- cumsum(u_lens)
+  cum_begs <- c(1L, cum_ends[-length(cum_ends)] + 1L)
+  n_rle    <- length(u_vals)
 
+  n_elig <- sum(u_lens >= 2L)
+  if (n_elig == 0L)
+    stop("No eligible units (>= 2 observations) in first chunk.")
+
+  min_warm  <- min(max(3L * p_guess, 30L), n_elig)
+  t_idx_vec <- as.integer(chunk_df[[time_col]])
+
+  # Greedy early-exit: scan units in order, stop once all periods covered + min_warm met
   uncovered  <- all_times_idx
   warmup_ids <- character(0)
-  for (uid_ch in elig_ord) {
-    if (length(uncovered) == 0L) break
-    ts <- elig_times[[uid_ch]]
-    if (any(uncovered %in% ts)) {
-      warmup_ids <- c(warmup_ids, uid_ch)
-      uncovered  <- setdiff(uncovered, ts)
+  for (j in seq_len(n_rle)) {
+    if (u_lens[j] < 2L) next
+    ts     <- unique(t_idx_vec[cum_begs[j]:cum_ends[j]])
+    new_ts <- intersect(ts, uncovered)
+    if (length(new_ts) > 0L || length(warmup_ids) < min_warm) {
+      warmup_ids <- c(warmup_ids, u_vals[j])
+      uncovered  <- setdiff(uncovered, new_ts)
     }
+    if (length(uncovered) == 0L && length(warmup_ids) >= min_warm) break
   }
+  # Rare fallback: fill to min_warm if early-exit yielded too few
   if (length(warmup_ids) < min_warm) {
-    extra      <- setdiff(elig_ord, warmup_ids)
-    warmup_ids <- c(warmup_ids, head(extra, min_warm - length(warmup_ids)))
+    for (j in seq_len(n_rle)) {
+      if (u_lens[j] < 2L || u_vals[j] %in% warmup_ids) next
+      warmup_ids <- c(warmup_ids, u_vals[j])
+      if (length(warmup_ids) >= min_warm) break
+    }
   }
 
   if (verbose)
@@ -239,33 +252,46 @@ otwfe_update <- function(handle, chunk_df) {
   if (!.alg1_batch_rcpp_available)
     stop("Rcpp batch module required. Please check sourceCpp('src/alg1_batch.cpp').")
 
-  stream_idx_list <- split(seq_len(nrow(chunk_df)),
-                            as.character(chunk_df[[id_col]]))
-  new_units <- names(stream_idx_list)
+  # Unit boundary detection via rle() on the id column.
+  # rle() is O(n) and avoids the O(n * k) overhead of split() + unlist() when k
+  # (number of unique units per chunk) is large. Requires the chunk to be sorted
+  # by id_col; if not, sort it in place first.
+  id_vec <- as.character(chunk_df[[id_col]])
+  if (is.unsorted(id_vec)) {
+    ord      <- order(id_vec)
+    chunk_df <- chunk_df[ord, , drop = FALSE]
+    id_vec   <- id_vec[ord]
+  }
+  rle_res   <- rle(id_vec)
+  new_units <- rle_res$values
+  lens_vec  <- rle_res$lengths        # observation count per unit
   if (length(new_units) == 0L) return(handle)
 
-  new_all_idx  <- unlist(stream_idx_list, use.names = FALSE)
-  t_all_new    <- as.integer(chunk_df[[time_col]])[new_all_idx]
+  t_all_new    <- as.integer(chunk_df[[time_col]])
   over_support <- t_all_new > S_pre$T_support
 
   if (any(over_support)) {
     warning(sprintf("%d observation(s) exceed T_support (%d) and will be dropped.",
                     sum(over_support), S_pre$T_support))
-  }
-
-  keep_idx <- new_all_idx[!over_support]
-  t_batch  <- t_all_new[!over_support]
-  x_batch  <- as.matrix(chunk_df[keep_idx, x_cols, drop = FALSE])
-  y_batch  <- as.numeric(chunk_df[[y_col]])[keep_idx]
-
-  if (any(over_support)) {
-    keep_flags    <- !over_support
-    flags_by_unit <- split(keep_flags,
-                            as.character(chunk_df[[id_col]])[new_all_idx])
-    lens_batch <- sapply(flags_by_unit[new_units], sum)
+    keep_mask <- !over_support
+    keep_idx  <- which(keep_mask)
+    t_batch   <- t_all_new[keep_mask]
+    x_batch   <- as.matrix(chunk_df[keep_idx, x_cols, drop = FALSE])
+    y_batch   <- as.numeric(chunk_df[[y_col]])[keep_idx]
+    # Recompute unit lengths after filtering using cumsum of rle lengths
+    cum_end   <- cumsum(lens_vec)
+    cum_beg   <- c(1L, cum_end[-length(cum_end)] + 1L)
+    lens_batch <- vapply(seq_along(new_units),
+                         function(j) sum(keep_mask[cum_beg[j]:cum_end[j]]),
+                         integer(1L))
   } else {
-    lens_batch <- lengths(stream_idx_list)
+    # Common path: no filtering, use chunk rows directly (no index vector needed)
+    t_batch    <- t_all_new
+    x_batch    <- as.matrix(chunk_df[, x_cols, drop = FALSE])
+    y_batch    <- as.numeric(chunk_df[[y_col]])
+    lens_batch <- lens_vec
   }
+
   lens_batch <- lens_batch[lens_batch > 0L]
   if (length(lens_batch) == 0L) return(handle)
 
